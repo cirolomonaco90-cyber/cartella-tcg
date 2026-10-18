@@ -17,7 +17,21 @@ android {
         versionName = "0.1.0"
     }
 
+    // Chiave di debug fissa (nel repo) così ogni APK di prova si installa sopra il precedente
+    // senza dover disinstallare e perdere la collezione. NON usarla per il Play Store.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
         }
