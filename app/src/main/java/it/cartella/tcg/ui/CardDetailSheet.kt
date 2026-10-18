@@ -155,7 +155,22 @@ fun CardDetailSheet(vm: AppViewModel, onDismiss: () -> Unit) {
                                 textAlign = TextAlign.Center,
                             )
                         }
-                        if (card.imageFromEnglish) {
+                        if (card.dataFromEnglish) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color.White.copy(alpha = 0.18f),
+                                contentColor = Color.White,
+                            ) {
+                                Text(
+                                    "TCGdex non ha ancora questa carta in ${languageOf(d.lang).label.lowercase()}: " +
+                                        "nome e immagine sono della versione inglese. " +
+                                        "Puoi comunque registrarla come copia in ${languageOf(d.lang).label.lowercase()}.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                )
+                            }
+                        } else if (card.imageFromEnglish) {
                             Text(
                                 "Immagine della versione inglese (manca in questa lingua)",
                                 style = MaterialTheme.typography.labelSmall,
@@ -169,7 +184,7 @@ fun CardDetailSheet(vm: AppViewModel, onDismiss: () -> Unit) {
 
             d.error?.let {
                 ErrorBanner(it)
-                if (!it.contains("lingua")) {
+                if (!it.startsWith("Carta non trovata")) {
                     TextButton(onClick = vm::retryDetail) { Text("Riprova") }
                 }
             }

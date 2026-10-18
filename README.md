@@ -27,6 +27,12 @@ L'app legge carte, set, immagini e prezzi dall'API REST pubblica di TCGdex (`htt
 
 Nella scheda di ogni carta, "Venduti su eBay" apre le inserzioni vendute su eBay.it per quella carta, per un controllo manuale.
 
+## Copertura delle carte e ripiego sull'inglese
+
+TCGdex ha quasi tutte le carte occidentali in inglese (verificato sul database sorgente a ottobre 2026: 21.291 carte su 21.393, set fino a settembre 2026). In italiano invece mancano quasi tutti i set 2000-2011 (Fossil, Team Rocket, Neo, e-Card, EX, Diamante e Perla, Platino, HeartGold SoulSilver, ...), circa il 32% delle carte.
+
+Siccome l'id di una carta è uguale in tutte le lingue, l'app unisce i risultati: ricerca, elenco dei set e carte di un set mostrano prima la lingua scelta, poi le carte presenti solo in inglese (segnate "dati EN"). Una carta trovata così si può registrare comunque come copia italiana.
+
 ## Altre funzioni
 
 - Avanzamento dei set ("Hai 23 carte su 102") con le carte mancanti in trasparenza

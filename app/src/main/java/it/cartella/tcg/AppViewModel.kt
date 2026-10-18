@@ -193,14 +193,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val nextPage = _search.value.page + 1
         _search.update { it.copy(loading = true, error = null) }
         searchJob = viewModelScope.launch {
-            val res = api { TcgdexApi.searchCards(lang, q, nextPage, PAGE_SIZE) }
-            val items = res.getOrNull()
-            if (items != null) {
+            val res = api { TcgdexApi.searchCardsWithFallback(lang, q, nextPage, PAGE_SIZE) }
+            val result = res.getOrNull()
+            if (result != null) {
                 _search.update { s ->
                     s.copy(
-                        results = (s.results + items).distinctBy { it.id },
+                        results = (s.results + result.cards).distinctBy { it.id },
                         page = nextPage,
-                        endReached = items.size < PAGE_SIZE,
+                        endReached = result.endReached,
                         loading = false,
                     )
                 }
@@ -229,7 +229,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         searchJob?.cancel()
         _search.update { it.copy(loading = true, error = null) }
         searchJob = viewModelScope.launch {
-            val res = api { TcgdexApi.sets(lang) }
+            val res = api { TcgdexApi.setsWithFallback(lang) }
             val sets = res.getOrNull()
             if (sets != null) {
                 // TCGdex elenca i set dal più vecchio: mostriamo prima i più recenti.
@@ -245,7 +245,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         searchJob?.cancel()
         _search.update { it.copy(selectedSet = set, setCards = emptyList(), loading = true, error = null) }
         searchJob = viewModelScope.launch {
-            val res = api { TcgdexApi.setCards(lang, set.id) }
+            val res = api { TcgdexApi.setCardsWithFallback(lang, set.id) }
             val cards = res.getOrNull()
             if (cards != null) {
                 _search.update { it.copy(setCards = cards, loading = false) }
@@ -302,7 +302,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 val failure = res.exceptionOrNull()
                 val msg = if (failure is NotFoundException) {
-                    "Questa carta non esiste in questa lingua secondo TCGdex"
+                    "Carta non trovata su TCGdex"
                 } else {
                     failure?.userMessage()
                 }

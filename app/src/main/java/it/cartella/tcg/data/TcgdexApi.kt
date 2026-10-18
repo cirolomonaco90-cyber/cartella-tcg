@@ -2,6 +2,8 @@ package it.cartella.tcg.data
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
@@ -123,25 +125,102 @@ object TcgdexApi {
         )
     }
 
+    // -------------------------------------------------------------------------
+    // Ripiego sull'inglese.
+    // TCGdex ha quasi tutte le carte occidentali in inglese, ma in altre lingue
+    // mancano interi periodi (es. in italiano quasi tutti i set 2000-2011).
+    // L'id di una carta è uguale in tutte le lingue, quindi uniamo i risultati:
+    // prima la lingua scelta, poi le carte presenti solo in inglese.
+    // -------------------------------------------------------------------------
+
+    private suspend fun <T> orNullIfMissing(block: suspend () -> T): T? = try {
+        block()
+    } catch (e: NotFoundException) {
+        null
+    }
+
+    suspend fun searchCardsWithFallback(lang: String, name: String, page: Int, perPage: Int): SearchPage =
+        coroutineScope {
+            if (lang == "en") {
+                val list = searchCards("en", name, page, perPage)
+                return@coroutineScope SearchPage(list, list.size < perPage)
+            }
+            val local = async { searchCards(lang, name, page, perPage) }
+            val english = async {
+                try {
+                    searchCards("en", name, page, perPage)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null // l'inglese è solo un'aggiunta: se fallisce teniamo la lingua scelta
+                }
+            }
+            val l = local.await()
+            val e = english.await().orEmpty()
+            val ids = l.mapTo(HashSet()) { it.id }
+            val extra = e.filter { it.id !in ids }.map { it.copy(fromEnglish = true) }
+            SearchPage(l + extra, l.size < perPage && e.size < perPage)
+        }
+
+    suspend fun setsWithFallback(lang: String): List<SetBrief> = coroutineScope {
+        if (lang == "en") return@coroutineScope sets("en")
+        val local = async { orNullIfMissing { sets(lang) }.orEmpty() }
+        val english = async { sets("en") }
+        val l = local.await()
+        val byId = l.associateBy { it.id }
+        val e = english.await()
+        // Ordine cronologico dell'inglese, nome localizzato quando esiste.
+        val merged = e.map { en ->
+            val loc = byId[en.id]
+            if (loc == null) en else loc.copy(total = maxOf(loc.total, en.total), logoBase = loc.logoBase ?: en.logoBase)
+        }
+        val enIds = e.mapTo(HashSet()) { it.id }
+        merged + l.filter { it.id !in enIds }
+    }
+
+    suspend fun setCardsWithFallback(lang: String, setId: String): List<CardBrief> = coroutineScope {
+        if (lang == "en") return@coroutineScope setCards("en", setId)
+        val local = async { orNullIfMissing { setCards(lang, setId) } }
+        val english = async { orNullIfMissing { setCards("en", setId) } }
+        val l = local.await()
+        val e = english.await()
+        if (l == null && e == null) throw NotFoundException()
+        val byId = l.orEmpty().associateBy { it.id }
+        val merged = e.orEmpty().map { en -> byId[en.id] ?: en.copy(fromEnglish = true) }
+        val enIds = e.orEmpty().mapTo(HashSet()) { it.id }
+        merged + l.orEmpty().filter { it.id !in enIds }
+    }
+
     /**
-     * Come [card], ma se nella lingua scelta manca l'immagine o il prezzo
-     * li prende dalla versione inglese (stesso id carta).
+     * Come [card], ma:
+     * - se la carta non esiste nella lingua scelta usa i dati inglesi ([CardDetail.dataFromEnglish]);
+     * - se esiste ma manca l'immagine o il prezzo, li prende dalla versione inglese.
      */
     suspend fun cardWithFallback(lang: String, id: String): CardDetail {
-        val card = card(lang, id)
-        if (lang == "en" || (card.imageBase != null && card.pricing != null)) return card
+        if (lang != "en") {
+            val local = orNullIfMissing { card(lang, id) }
+            if (local == null) {
+                return card("en", id).copy(dataFromEnglish = true, imageFromEnglish = true)
+            }
+            return fillFromEnglish(local, id)
+        }
+        return card("en", id)
+    }
+
+    private suspend fun fillFromEnglish(local: CardDetail, id: String): CardDetail {
+        if (local.imageBase != null && local.pricing != null) return local
         val en = try {
             card("en", id)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return card
+            return local
         }
-        return card.copy(
-            imageBase = card.imageBase ?: en.imageBase,
-            imageFromEnglish = card.imageBase == null && en.imageBase != null,
-            pricing = card.pricing ?: en.pricing,
-            variantPricing = card.variantPricing.ifEmpty { en.variantPricing },
+        return local.copy(
+            imageBase = local.imageBase ?: en.imageBase,
+            imageFromEnglish = local.imageBase == null && en.imageBase != null,
+            pricing = local.pricing ?: en.pricing,
+            variantPricing = local.variantPricing.ifEmpty { en.variantPricing },
         )
     }
 

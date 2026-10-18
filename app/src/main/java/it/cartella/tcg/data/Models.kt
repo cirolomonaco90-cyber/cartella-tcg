@@ -32,7 +32,11 @@ data class CardBrief(
     val localId: String,
     val name: String,
     val imageBase: String?,
+    /** true se la carta manca nella lingua scelta e i dati vengono dalla versione inglese. */
+    val fromEnglish: Boolean = false,
 )
+
+data class SearchPage(val cards: List<CardBrief>, val endReached: Boolean)
 
 data class SetBrief(
     val id: String,
@@ -79,4 +83,6 @@ data class CardDetail(
     val variantPricing: List<VariantPricing> = emptyList(),
     /** true se l'immagine viene dalla versione inglese perché manca nella lingua scelta. */
     val imageFromEnglish: Boolean = false,
+    /** true se TCGdex non ha la carta nella lingua scelta e tutti i dati sono quelli inglesi. */
+    val dataFromEnglish: Boolean = false,
 )

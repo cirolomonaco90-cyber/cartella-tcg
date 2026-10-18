@@ -134,7 +134,8 @@ fun SearchScreen(vm: AppViewModel, onOpenCard: (CardBrief) -> Unit) {
                             EmptyState(
                                 icon = Icons.Default.Search,
                                 title = "Nessun risultato",
-                                text = "Prova un altro nome o cambia lingua: non tutte le carte esistono in ogni lingua.",
+                                text = "Scrivi solo il nome della carta (es. \"Lugia\", non \"Lugia Aquapolis\"). " +
+                                    "Per allenatori ed energie prova anche il nome inglese, oppure cerca per set.",
                             )
                         } else {
                             StartState(onPick = vm::quickSearch)
@@ -290,9 +291,10 @@ private fun CardGrid(
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            "#${card.localId}",
+                            if (card.fromEnglish) "#${card.localId} · dati EN" else "#${card.localId}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
                         )
                     }
                 }
