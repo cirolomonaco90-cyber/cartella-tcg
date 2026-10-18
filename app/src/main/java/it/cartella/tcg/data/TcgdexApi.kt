@@ -1,5 +1,6 @@
 package it.cartella.tcg.data
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
@@ -21,7 +22,11 @@ import java.util.concurrent.TimeUnit
 open class ApiException(message: String, cause: Throwable? = null) : Exception(message, cause)
 class NotFoundException : ApiException("Non trovato")
 
-/** Client minimale per l'API REST di TCGdex (https://tcgdex.dev/rest). */
+/**
+ * Client minimale per l'API REST pubblica di TCGdex (https://tcgdex.dev/rest).
+ * Nessuna chiave richiesta. I campi sono letti in modo tollerante: se TCGdex
+ * aggiunge o toglie qualcosa, l'app non si rompe.
+ */
 object TcgdexApi {
     private const val BASE = "https://api.tcgdex.net/v2"
 
@@ -51,9 +56,9 @@ object TcgdexApi {
         } catch (e: ApiException) {
             throw e
         } catch (e: IOException) {
-            throw ApiException("Connessione non riuscita", e)
+            throw ApiException("Connessione non riuscita. Controlla internet e riprova.", e)
         } catch (e: SerializationException) {
-            throw ApiException("Risposta non valida", e)
+            throw ApiException("Risposta non valida da TCGdex", e)
         }
     }
 
@@ -95,8 +100,9 @@ object TcgdexApi {
     }
 
     suspend fun card(lang: String, id: String): CardDetail {
-        val o = get(lang, "cards/$id").asObject() ?: throw ApiException("Risposta non valida")
+        val o = get(lang, "cards/$id").asObject() ?: throw ApiException("Risposta non valida da TCGdex")
         val set = o["set"] as? JsonObject
+        val setCount = set?.get("cardCount") as? JsonObject
         val variants = o["variants"] as? JsonObject
         fun flag(key: String) = (variants?.get(key) as? JsonPrimitive)?.booleanOrNull ?: false
         return CardDetail(
@@ -105,6 +111,7 @@ object TcgdexApi {
             name = o["name"].str() ?: id,
             imageBase = o["image"].str(),
             setName = set?.get("name").str() ?: "",
+            setTotal = setCount?.get("official").int() ?: setCount?.get("total").int(),
             rarity = o["rarity"].str(),
             illustrator = o["illustrator"].str(),
             hasNormal = flag("normal"),
@@ -112,13 +119,36 @@ object TcgdexApi {
             hasHolo = flag("holo"),
             hasFirstEdition = flag("firstEdition"),
             pricing = parsePricing(o["pricing"]),
+            variantPricing = parseVariants(o["variants_detailed"]),
+        )
+    }
+
+    /**
+     * Come [card], ma se nella lingua scelta manca l'immagine o il prezzo
+     * li prende dalla versione inglese (stesso id carta).
+     */
+    suspend fun cardWithFallback(lang: String, id: String): CardDetail {
+        val card = card(lang, id)
+        if (lang == "en" || (card.imageBase != null && card.pricing != null)) return card
+        val en = try {
+            card("en", id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return card
+        }
+        return card.copy(
+            imageBase = card.imageBase ?: en.imageBase,
+            imageFromEnglish = card.imageBase == null && en.imageBase != null,
+            pricing = card.pricing ?: en.pricing,
+            variantPricing = card.variantPricing.ifEmpty { en.variantPricing },
         )
     }
 
     // ---- parsing helpers (tolleranti: i campi mancanti diventano null) ----
 
     private fun JsonElement.asArray(): JsonArray =
-        this as? JsonArray ?: throw ApiException("Risposta non valida")
+        this as? JsonArray ?: throw ApiException("Risposta non valida da TCGdex")
 
     private fun JsonElement.asObject(): JsonObject? = this as? JsonObject
 
@@ -136,9 +166,24 @@ object TcgdexApi {
         )
     }
 
+    private fun parseVariants(el: JsonElement?): List<VariantPricing> {
+        val arr = el as? JsonArray ?: return emptyList()
+        return arr.mapNotNull { item ->
+            val o = item as? JsonObject ?: return@mapNotNull null
+            val type = o["type"].str() ?: return@mapNotNull null
+            val stamps = (o["stamp"] as? JsonArray)?.mapNotNull { it.str() }.orEmpty()
+            VariantPricing(
+                type = type,
+                firstEdition = stamps.any { it.startsWith("1st-edition") },
+                pricing = parsePricing(o["pricing"]),
+            )
+        }
+    }
+
     private fun parsePricing(el: JsonElement?): Pricing? {
         val p = el as? JsonObject ?: return null
-        val skip = setOf("updated", "unit")
+        // Campi non di prezzo restituiti da TCGdex (es. Cardmarket include idProduct).
+        val skip = setOf("updated", "unit", "idProduct", "productId")
 
         val cm = (p["cardmarket"] as? JsonObject)
             ?.entries
@@ -152,6 +197,7 @@ object TcgdexApi {
             ?.filter { it.key !in skip && it.value is JsonObject }
             ?.associate { (variant, v) ->
                 variant to (v as JsonObject).entries
+                    .filter { it.key !in skip }
                     .mapNotNull { (k, x) -> x.dbl()?.let { k to it } }
                     .toMap()
             }

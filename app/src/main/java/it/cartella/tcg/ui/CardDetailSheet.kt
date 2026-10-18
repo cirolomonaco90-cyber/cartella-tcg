@@ -28,6 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -45,15 +46,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import it.cartella.tcg.AppViewModel
+import it.cartella.tcg.data.CardDetail
 import it.cartella.tcg.data.Condition
-import it.cartella.tcg.data.Pricing
+import it.cartella.tcg.data.MarketLinks
 import it.cartella.tcg.data.Valuation
 import it.cartella.tcg.data.Variant
 import it.cartella.tcg.data.condition
+import it.cartella.tcg.data.languageOf
 import it.cartella.tcg.data.variant
 import kotlin.math.roundToInt
 
@@ -63,6 +67,7 @@ fun CardDetailSheet(vm: AppViewModel, onDismiss: () -> Unit) {
     val d by vm.detail.collectAsState()
     val factors by vm.factors.collectAsState()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val uri = LocalUriHandler.current
 
     val editing = d.editing
     val card = d.card
@@ -134,21 +139,40 @@ fun CardDetailSheet(vm: AppViewModel, onDismiss: () -> Unit) {
                         textAlign = TextAlign.Center,
                     )
                     if (card != null) {
+                        val number = card.setTotal?.let { "${card.localId}/$it" } ?: card.localId
                         Text(
-                            "${card.setName} · #${card.localId}",
+                            "${card.setName} · $number",
                             style = MaterialTheme.typography.bodyMedium,
                             color = Color.White.copy(alpha = 0.9f),
                             textAlign = TextAlign.Center,
                         )
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            card.rarity?.let { Tag(it, Color.White.copy(alpha = 0.22f), Color.White) }
-                            card.illustrator?.let { Tag(it, Color.White.copy(alpha = 0.22f), Color.White) }
+                        card.rarity?.let { Tag(it, Color.White.copy(alpha = 0.22f), Color.White) }
+                        card.illustrator?.let {
+                            Text(
+                                "Illustrazione di $it",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White.copy(alpha = 0.8f),
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                        if (card.imageFromEnglish) {
+                            Text(
+                                "Immagine della versione inglese (manca in questa lingua)",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White.copy(alpha = 0.8f),
+                                textAlign = TextAlign.Center,
+                            )
                         }
                     }
                 }
             }
 
-            d.error?.let { ErrorBanner(it) }
+            d.error?.let {
+                ErrorBanner(it)
+                if (!it.contains("lingua")) {
+                    TextButton(onClick = vm::retryDetail) { Text("Riprova") }
+                }
+            }
 
             // ---------------------------------------------------------- lingua
             Section("Lingua della tua copia") {
@@ -227,13 +251,35 @@ fun CardDetailSheet(vm: AppViewModel, onDismiss: () -> Unit) {
 
             // ---------------------------------------------------------- valore
             ValueBox(
-                pricing = card?.pricing,
+                card = card,
                 variant = variant,
                 condition = condition,
-                factor = factors[condition] ?: condition.defaultFactor,
+                conditionFactor = factors.of(condition),
+                langFactor = factors.ofLang(d.lang),
+                langLabel = languageOf(d.lang).label,
                 quantity = quantity,
-                cardLoaded = card != null,
+                loading = d.loading,
             )
+
+            // ---------------------------------------------------------- verifica sul mercato
+            if (card != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            uri.openUri(
+                                MarketLinks.ebaySold(
+                                    MarketLinks.searchText(card.name, card.localId, card.setTotal, d.lang),
+                                ),
+                            )
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Venduti su eBay") }
+                    OutlinedButton(
+                        onClick = { uri.openUri(MarketLinks.cardmarketSearch(card.name)) },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Cardmarket") }
+                }
+            }
 
             // ---------------------------------------------------------- azioni
             if (editing == null) {
@@ -256,6 +302,8 @@ fun CardDetailSheet(vm: AppViewModel, onDismiss: () -> Unit) {
                         vm.updateOwned(editing, card, d.lang, condition, variant, quantity)
                         onDismiss()
                     },
+                    // Non si può spostare la copia in una lingua in cui la carta non esiste.
+                    enabled = card != null || (d.lang == editing.lang && !d.loading),
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                 ) {
@@ -293,14 +341,17 @@ private fun Section(title: String, content: @Composable () -> Unit) {
 
 @Composable
 private fun ValueBox(
-    pricing: Pricing?,
+    card: CardDetail?,
     variant: Variant,
     condition: Condition,
-    factor: Double,
+    conditionFactor: Double,
+    langFactor: Double,
+    langLabel: String,
     quantity: Int,
-    cardLoaded: Boolean,
+    loading: Boolean,
 ) {
-    val base = Valuation.baseValue(pricing, variant)
+    val base = Valuation.baseValue(card, variant)
+    val factor = conditionFactor * langFactor
     Box(
         Modifier
             .fillMaxWidth()
@@ -317,14 +368,20 @@ private fun ValueBox(
                 color = OnAmber.copy(alpha = 0.75f),
             )
             when {
-                !cardLoaded -> Text(
+                loading -> Text(
                     "Caricamento prezzi…",
                     style = MaterialTheme.typography.bodyLarge,
                     color = OnAmber,
                 )
 
+                card == null -> Text(
+                    "Nessun dato disponibile",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = OnAmber,
+                )
+
                 base == null -> Text(
-                    "Prezzo non disponibile per questa carta/variante",
+                    "Prezzo non disponibile per questa carta o variante. Controlla i venduti su eBay qui sotto.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = OnAmber,
                 )
@@ -344,17 +401,30 @@ private fun ValueBox(
                             color = OnAmber,
                         )
                     }
-                    val approx = if (base.approximate) " · stima approssimata per questa variante" else ""
+                    val langPart = if (langFactor != 1.0) {
+                        " × ${(langFactor * 100).roundToInt()}% ($langLabel)"
+                    } else {
+                        ""
+                    }
                     Text(
                         "Riferimento ${money(base.amount, base.currency)} (${base.source}) " +
-                            "× ${(factor * 100).roundToInt()}% per ${condition.labelIt}$approx",
+                            "× ${(conditionFactor * 100).roundToInt()}% (${condition.labelIt})$langPart",
                         style = MaterialTheme.typography.bodySmall,
                         color = OnAmber.copy(alpha = 0.85f),
                     )
+                    if (base.approximate) {
+                        Text(
+                            "Attenzione: prezzo della versione base, non di questa variante. " +
+                                "Il valore reale può essere molto diverso.",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = OnAmber,
+                        )
+                    }
                 }
             }
             Text(
-                "Stima dai prezzi medi di mercato, non dai singoli venduti.",
+                "Stima dai prezzi medi di mercato (uguali per tutte le lingue), non dai singoli venduti.",
                 style = MaterialTheme.typography.labelSmall,
                 color = OnAmber.copy(alpha = 0.75f),
             )

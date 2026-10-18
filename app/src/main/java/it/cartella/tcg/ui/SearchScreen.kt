@@ -30,6 +30,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -40,7 +41,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
@@ -106,7 +109,17 @@ fun SearchScreen(vm: AppViewModel, onOpenCard: (CardBrief) -> Unit) {
             }
         }
 
-        s.error?.let { ErrorBanner(it, Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp)) }
+        s.error?.let { err ->
+            Row(
+                Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ErrorBanner(err, Modifier.weight(1f))
+                if (!err.startsWith("Scrivi")) {
+                    TextButton(onClick = vm::retry) { Text("Riprova") }
+                }
+            }
+        }
 
         Box(Modifier.weight(1f)) {
             when {
@@ -142,10 +155,36 @@ fun SearchScreen(vm: AppViewModel, onOpenCard: (CardBrief) -> Unit) {
                             fontWeight = FontWeight.Bold,
                         )
                     }
+                    // Avanzamento del set: quante carte diverse possiedi.
+                    if (s.setCards.isNotEmpty()) {
+                        val have = s.setCards.count { counts.containsKey(it.id) }
+                        val total = s.setCards.size
+                        Column(Modifier.padding(horizontal = 16.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(
+                                    "Hai $have carte su $total",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    "${have * 100 / total}%",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
+                            LinearProgressIndicator(
+                                progress = { have.toFloat() / total },
+                                modifier = Modifier.fillMaxWidth().padding(top = 6.dp).height(8.dp),
+                                strokeCap = StrokeCap.Round,
+                            )
+                        }
+                    }
                     Box(Modifier.weight(1f)) {
                         CardGrid(
                             cards = s.setCards,
                             counts = counts,
+                            dimUnowned = counts.isNotEmpty(),
                             loading = s.loading,
                             onLoadMore = {},
                             onOpen = onOpenCard,
@@ -192,6 +231,7 @@ private fun CardGrid(
     cards: List<CardBrief>,
     counts: Map<String, Int>,
     loading: Boolean,
+    dimUnowned: Boolean = false,
     onLoadMore: () -> Unit,
     onOpen: (CardBrief) -> Unit,
     empty: @Composable () -> Unit,
@@ -212,7 +252,11 @@ private fun CardGrid(
                 if (index >= cards.size - 6) {
                     LaunchedEffect(cards.size) { onLoadMore() }
                 }
-                ElevatedCard(onClick = { onOpen(card) }) {
+                val missing = dimUnowned && !counts.containsKey(card.id)
+                ElevatedCard(
+                    onClick = { onOpen(card) },
+                    modifier = Modifier.alpha(if (missing) 0.45f else 1f),
+                ) {
                     Box {
                         CardImage(
                             card.imageBase,

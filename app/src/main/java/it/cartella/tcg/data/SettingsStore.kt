@@ -16,11 +16,15 @@ class SettingsStore(private val context: Context) {
     private val langKey = stringPreferencesKey("lang")
 
     private fun factorKey(c: Condition) = doublePreferencesKey("factor_${c.code}")
+    private fun langFactorKey(code: String) = doublePreferencesKey("langfactor_$code")
 
     val language: Flow<String> = context.dataStore.data.map { it[langKey] ?: "it" }
 
-    val factors: Flow<Map<Condition, Double>> = context.dataStore.data.map { prefs ->
-        Condition.entries.associateWith { prefs[factorKey(it)] ?: it.defaultFactor }
+    val factors: Flow<ValueFactors> = context.dataStore.data.map { prefs ->
+        ValueFactors(
+            condition = Condition.entries.associateWith { prefs[factorKey(it)] ?: it.defaultFactor },
+            language = CARD_LANGUAGES.mapNotNull { l -> prefs[langFactorKey(l.code)]?.let { l.code to it } }.toMap(),
+        )
     }
 
     suspend fun setLanguage(code: String) {
@@ -31,7 +35,14 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit { it[factorKey(c)] = value }
     }
 
+    suspend fun setLanguageFactor(code: String, value: Double) {
+        context.dataStore.edit { it[langFactorKey(code)] = value }
+    }
+
     suspend fun resetFactors() {
-        context.dataStore.edit { prefs -> Condition.entries.forEach { prefs.remove(factorKey(it)) } }
+        context.dataStore.edit { prefs ->
+            Condition.entries.forEach { prefs.remove(factorKey(it)) }
+            CARD_LANGUAGES.forEach { prefs.remove(langFactorKey(it.code)) }
+        }
     }
 }

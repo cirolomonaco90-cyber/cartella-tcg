@@ -12,8 +12,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -36,11 +38,18 @@ fun CartellaApp(vm: AppViewModel) {
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
-    // Messaggi di conferma ("Pikachu aggiunta alla collezione", ...).
+    // Messaggi di conferma ("Pikachu aggiunta alla collezione", ...), con "Annulla" quando serve.
     LaunchedEffect(Unit) {
         vm.messages.collect { msg ->
             snackbar.currentSnackbarData?.dismiss()
-            scope.launch { snackbar.showSnackbar(msg) }
+            scope.launch {
+                val result = snackbar.showSnackbar(
+                    message = msg.text,
+                    actionLabel = msg.actionLabel,
+                    duration = if (msg.action != null) SnackbarDuration.Long else SnackbarDuration.Short,
+                )
+                if (result == SnackbarResult.ActionPerformed) msg.action?.invoke()
+            }
         }
     }
 

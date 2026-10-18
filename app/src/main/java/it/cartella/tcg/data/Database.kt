@@ -45,8 +45,18 @@ val OwnedCard.condition: Condition
 val OwnedCard.variant: Variant
     get() = Variant.entries.firstOrNull { it.name == variantName } ?: Variant.NORMAL
 
-fun OwnedCard.unitValue(factors: Map<Condition, Double>): Double? =
-    baseAmount?.let { it * (factors[condition] ?: condition.defaultFactor) }
+/** Coefficienti scelti dall'utente: per condizione e (correzione) per lingua. */
+data class ValueFactors(
+    val condition: Map<Condition, Double> = Condition.entries.associateWith { it.defaultFactor },
+    val language: Map<String, Double> = emptyMap(),
+) {
+    fun of(c: Condition): Double = condition[c] ?: c.defaultFactor
+    fun ofLang(lang: String): Double = language[lang] ?: 1.0
+}
+
+/** Valore di una singola copia: prezzo di riferimento × condizione × correzione lingua. */
+fun OwnedCard.unitValue(f: ValueFactors): Double? =
+    baseAmount?.let { it * f.of(condition) * f.ofLang(lang) }
 
 @Dao
 interface OwnedCardDao {
@@ -58,6 +68,18 @@ interface OwnedCardDao {
             "AND conditionName = :conditionName AND variantName = :variantName LIMIT 1",
     )
     suspend fun find(cardId: String, lang: String, conditionName: String, variantName: String): OwnedCard?
+
+    @Query(
+        "SELECT * FROM owned_cards WHERE cardId = :cardId AND lang = :lang " +
+            "AND conditionName = :conditionName AND variantName = :variantName AND id != :excludeId LIMIT 1",
+    )
+    suspend fun findOther(
+        cardId: String,
+        lang: String,
+        conditionName: String,
+        variantName: String,
+        excludeId: Long,
+    ): OwnedCard?
 
     @Insert
     suspend fun insert(card: OwnedCard): Long

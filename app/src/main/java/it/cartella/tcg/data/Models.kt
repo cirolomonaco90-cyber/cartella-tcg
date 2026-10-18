@@ -51,12 +51,24 @@ data class Pricing(
     val tcg: Map<String, Map<String, Double>>,
 )
 
+/**
+ * Una voce di "variants_detailed": TCGdex può avere prezzi separati per variante
+ * (es. la 1ª edizione è un prodotto diverso su Cardmarket).
+ */
+data class VariantPricing(
+    /** "normal", "holo", "reverse", ... */
+    val type: String,
+    val firstEdition: Boolean,
+    val pricing: Pricing?,
+)
+
 data class CardDetail(
     val id: String,
     val localId: String,
     val name: String,
     val imageBase: String?,
     val setName: String,
+    val setTotal: Int?,
     val rarity: String?,
     val illustrator: String?,
     val hasNormal: Boolean,
@@ -64,4 +76,7 @@ data class CardDetail(
     val hasHolo: Boolean,
     val hasFirstEdition: Boolean,
     val pricing: Pricing?,
+    val variantPricing: List<VariantPricing> = emptyList(),
+    /** true se l'immagine viene dalla versione inglese perché manca nella lingua scelta. */
+    val imageFromEnglish: Boolean = false,
 )

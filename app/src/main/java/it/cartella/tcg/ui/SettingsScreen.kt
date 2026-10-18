@@ -32,12 +32,14 @@ import it.cartella.tcg.AppViewModel
 import it.cartella.tcg.data.CARD_LANGUAGES
 import it.cartella.tcg.data.Condition
 import it.cartella.tcg.data.Valuation
+import it.cartella.tcg.data.languageOf
 import kotlin.math.roundToInt
 
 @Composable
 fun SettingsScreen(vm: AppViewModel) {
     val lang by vm.language.collectAsState()
     val factors by vm.factors.collectAsState()
+    val owned by vm.owned.collectAsState()
     val uri = LocalUriHandler.current
 
     Column(Modifier.fillMaxSize()) {
@@ -102,7 +104,7 @@ fun SettingsScreen(vm: AppViewModel) {
                     )
 
                     Condition.entries.forEach { c ->
-                        val saved = factors[c] ?: c.defaultFactor
+                        val saved = factors.of(c)
                         var local by remember(saved) { mutableFloatStateOf(saved.toFloat()) }
                         Column {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -133,6 +135,49 @@ fun SettingsScreen(vm: AppViewModel) {
                 }
             }
 
+            // ------------------------------------------------------------ correzione per lingua
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "Correzione per lingua",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "I prezzi di riferimento sono uguali per tutte le lingue, ma sul mercato una carta " +
+                            "italiana o giapponese spesso vale diversamente da quella inglese. " +
+                            "Imposta qui la percentuale per le lingue che collezioni (100% = nessuna correzione).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    // Lingue presenti in collezione, più l'italiano e quella predefinita.
+                    val langs = (listOf("it", lang) + owned.map { it.lang }).distinct()
+                    langs.forEach { code ->
+                        val saved = factors.ofLang(code)
+                        var local by remember(code, saved) { mutableFloatStateOf(saved.toFloat()) }
+                        Column {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(languageOf(code).display, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "${(local * 100).roundToInt()}%",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            Slider(
+                                value = local,
+                                onValueChange = { local = it },
+                                onValueChangeFinished = {
+                                    vm.setLanguageFactor(code, Valuation.round2(local.toDouble()))
+                                },
+                                valueRange = 0.3f..2.0f,
+                            )
+                        }
+                    }
+                }
+            }
+
             // ------------------------------------------------------------ informazioni e TCGdex
             ElevatedCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -145,7 +190,8 @@ fun SettingsScreen(vm: AppViewModel) {
                         "Carte, lingue e immagini arrivano da TCGdex, database aperto delle carte Pokémon. " +
                             "I prezzi sono le medie di mercato Cardmarket (EUR) e, se mancano, TCGplayer (USD), " +
                             "così come le fornisce TCGdex. Sono stime, non i prezzi dei singoli venduti, " +
-                            "e possono non distinguere tra lingue diverse della stessa carta.",
+                            "e non distinguono tra lingue diverse della stessa carta. Per un controllo " +
+                            "puntuale usa il pulsante \"Venduti su eBay\" nella scheda di ogni carta.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

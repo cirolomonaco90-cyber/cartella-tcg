@@ -14,6 +14,7 @@ import it.cartella.tcg.data.SetBrief
 import it.cartella.tcg.data.SettingsStore
 import it.cartella.tcg.data.TcgdexApi
 import it.cartella.tcg.data.Valuation
+import it.cartella.tcg.data.ValueFactors
 import it.cartella.tcg.data.Variant
 import it.cartella.tcg.data.variant
 import kotlinx.coroutines.CancellationException
@@ -63,7 +64,13 @@ data class RefreshState(
     val running: Boolean = false,
     val done: Int = 0,
     val total: Int = 0,
-    val message: String? = null,
+)
+
+/** Messaggio per la snackbar, con un'eventuale azione (es. "Annulla"). */
+data class UiMessage(
+    val text: String,
+    val actionLabel: String? = null,
+    val action: (() -> Unit)? = null,
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -74,22 +81,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _language = MutableStateFlow("it")
     val language: StateFlow<String> = _language.asStateFlow()
 
-    val factors: StateFlow<Map<Condition, Double>> = settings.factors.stateIn(
-        viewModelScope,
-        SharingStarted.Eagerly,
-        Condition.entries.associateWith { it.defaultFactor },
-    )
+    val factors: StateFlow<ValueFactors> =
+        settings.factors.stateIn(viewModelScope, SharingStarted.Eagerly, ValueFactors())
 
     val owned: StateFlow<List<OwnedCard>> =
         dao.observeAll().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    /** Quante copie possiedi di ogni carta (tutte le lingue), per il badge nei risultati. */
+    /** Quante copie possiedi di ogni carta (tutte le lingue), per i badge e l'avanzamento dei set. */
     val ownedCounts: StateFlow<Map<String, Int>> = owned
         .map { list -> list.groupBy { it.cardId }.mapValues { (_, rows) -> rows.sumOf { r -> r.quantity } } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
-    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
-    val messages: SharedFlow<String> = _messages.asSharedFlow()
+    private val _messages = MutableSharedFlow<UiMessage>(extraBufferCapacity = 4)
+    val messages: SharedFlow<UiMessage> = _messages.asSharedFlow()
 
     private val _search = MutableStateFlow(SearchUiState())
     val search: StateFlow<SearchUiState> = _search.asStateFlow()
@@ -122,6 +126,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun Throwable.userMessage(): String =
         (this as? ApiException)?.message ?: "Errore imprevisto"
 
+    private fun say(text: String, actionLabel: String? = null, action: (() -> Unit)? = null) {
+        _messages.tryEmit(UiMessage(text, actionLabel, action))
+    }
+
     // ---------------------------------------------------------------- lingua
 
     fun setLanguage(code: String) {
@@ -130,7 +138,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settings.setLanguage(code) }
         // I risultati sono in una lingua precisa: ripetiamo la ricerca nella nuova.
         val s = _search.value
-        _search.update { it.copy(sets = emptyList(), setCards = emptyList(), selectedSet = null) }
+        searchJob?.cancel()
+        _search.update {
+            it.copy(sets = emptyList(), setCards = emptyList(), selectedSet = null, loading = false)
+        }
         when {
             s.mode == SearchMode.NAME && s.searched -> startNameSearch()
             s.mode == SearchMode.SET -> loadSets()
@@ -144,7 +155,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun onSetFilterChange(q: String) = _search.update { it.copy(setFilter = q) }
 
     fun setMode(mode: SearchMode) {
-        _search.update { it.copy(mode = mode, error = null) }
+        if (mode == _search.value.mode) return
+        // Ogni modalità ha il suo caricamento: annulliamo quello dell'altra.
+        searchJob?.cancel()
+        _search.update { it.copy(mode = mode, error = null, loading = false) }
         if (mode == SearchMode.SET && _search.value.sets.isEmpty()) loadSets()
     }
 
@@ -159,7 +173,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val q = _search.value.query.trim()
         searchJob?.cancel()
         if (q.length < 2) {
-            _search.update { it.copy(error = "Scrivi almeno 2 caratteri") }
+            _search.update { it.copy(error = "Scrivi almeno 2 caratteri", loading = false) }
             return
         }
         _search.update {
@@ -170,7 +184,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun loadMore() {
         val s = _search.value
-        if (s.loading || s.endReached || !s.searched || s.mode != SearchMode.NAME) return
+        if (s.loading || s.endReached || !s.searched || s.mode != SearchMode.NAME || s.error != null) return
         loadPage(s.query.trim())
     }
 
@@ -198,6 +212,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun retry() {
+        val s = _search.value
+        when {
+            s.mode == SearchMode.NAME -> if (s.results.isEmpty()) startNameSearch() else {
+                _search.update { it.copy(error = null) }
+                loadMore()
+            }
+            s.selectedSet != null -> openSet(s.selectedSet)
+            else -> loadSets()
+        }
+    }
+
     private fun loadSets() {
         val lang = _language.value
         searchJob?.cancel()
@@ -206,6 +232,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val res = api { TcgdexApi.sets(lang) }
             val sets = res.getOrNull()
             if (sets != null) {
+                // TCGdex elenca i set dal più vecchio: mostriamo prima i più recenti.
                 _search.update { it.copy(sets = sets.reversed(), loading = false) }
             } else {
                 _search.update { it.copy(loading = false, error = res.exceptionOrNull()?.userMessage()) }
@@ -258,19 +285,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         loadDetail()
     }
 
+    fun retryDetail() {
+        _detail.update { it.copy(loading = true, error = null) }
+        loadDetail()
+    }
+
     private fun loadDetail() {
         detailJob?.cancel()
         val d = _detail.value
         val id = d.brief?.id ?: return
         detailJob = viewModelScope.launch {
-            val res = api { TcgdexApi.card(d.lang, id) }
+            val res = api { TcgdexApi.cardWithFallback(d.lang, id) }
             val card = res.getOrNull()
             if (card != null) {
                 _detail.update { it.copy(card = card, loading = false, error = null) }
             } else {
                 val failure = res.exceptionOrNull()
                 val msg = if (failure is NotFoundException) {
-                    "Carta non disponibile in questa lingua"
+                    "Questa carta non esiste in questa lingua secondo TCGdex"
                 } else {
                     failure?.userMessage()
                 }
@@ -293,7 +325,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         variant: Variant,
         quantity: Int,
     ) {
-        val base = Valuation.baseValue(card.pricing, variant)
+        val base = Valuation.baseValue(card, variant)
         val now = System.currentTimeMillis()
         viewModelScope.launch {
             val existing = dao.find(card.id, lang, condition.name, variant.name)
@@ -328,7 +360,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     ),
                 )
             }
-            _messages.tryEmit("${card.name} aggiunta alla collezione")
+            say("${card.name} aggiunta alla collezione")
         }
     }
 
@@ -340,7 +372,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         variant: Variant,
         quantity: Int,
     ) {
-        val base = card?.let { Valuation.baseValue(it.pricing, variant) }
+        val base = card?.let { Valuation.baseValue(it, variant) }
         val now = System.currentTimeMillis()
         viewModelScope.launch {
             var updated = old.copy(
@@ -366,15 +398,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     priceUpdated = now,
                 )
             }
-            dao.update(updated)
-            _messages.tryEmit("Modifiche salvate")
+            // Se ora coincide con un'altra copia (stessa lingua, condizione e variante) le uniamo.
+            val twin = dao.findOther(updated.cardId, lang, condition.name, variant.name, old.id)
+            if (twin != null) {
+                dao.update(updated.copy(id = twin.id, quantity = twin.quantity + quantity, addedAt = twin.addedAt))
+                dao.delete(old)
+                say("Unita con una copia identica già in collezione")
+            } else {
+                dao.update(updated)
+                say("Modifiche salvate")
+            }
         }
     }
 
     fun deleteOwned(o: OwnedCard) {
         viewModelScope.launch {
             dao.delete(o)
-            _messages.tryEmit("${o.name} rimossa dalla collezione")
+            say("${o.name} rimossa dalla collezione", "Annulla") {
+                viewModelScope.launch { dao.insert(o.copy(id = 0)) }
+            }
         }
     }
 
@@ -388,15 +430,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             var failed = 0
             var done = 0
             for ((key, rows) in groups) {
-                val card = api { TcgdexApi.card(key.second, key.first) }.getOrNull()
+                val card = api { TcgdexApi.cardWithFallback(key.second, key.first) }.getOrNull()
                 if (card == null) {
                     failed++
                 } else {
                     val now = System.currentTimeMillis()
                     for (row in rows) {
-                        val base = Valuation.baseValue(card.pricing, row.variant) ?: continue
+                        val base = Valuation.baseValue(card, row.variant) ?: continue
+                        // Rilegge la riga: l'utente potrebbe averla modificata nel frattempo.
+                        val current = dao.find(row.cardId, row.lang, row.conditionName, row.variantName) ?: continue
                         dao.update(
-                            row.copy(
+                            current.copy(
                                 baseAmount = base.amount,
                                 currency = base.currency,
                                 priceSource = base.source,
@@ -409,9 +453,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _refresh.update { it.copy(done = done) }
                 delay(120)
             }
-            val msg = if (failed == 0) "Prezzi aggiornati" else "Prezzi aggiornati, $failed carte non raggiungibili"
-            _refresh.value = RefreshState(running = false, done = done, total = groups.size, message = msg)
-            _messages.tryEmit(msg)
+            _refresh.value = RefreshState()
+            say(if (failed == 0) "Prezzi aggiornati" else "Prezzi aggiornati, $failed carte non raggiungibili")
         }
     }
 
@@ -419,6 +462,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setFactor(c: Condition, value: Double) {
         viewModelScope.launch { settings.setFactor(c, value) }
+    }
+
+    fun setLanguageFactor(code: String, value: Double) {
+        viewModelScope.launch { settings.setLanguageFactor(code, value) }
     }
 
     fun resetFactors() {

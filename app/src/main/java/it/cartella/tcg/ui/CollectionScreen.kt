@@ -46,8 +46,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import it.cartella.tcg.AppViewModel
-import it.cartella.tcg.data.Condition
 import it.cartella.tcg.data.OwnedCard
+import it.cartella.tcg.data.ValueFactors
 import it.cartella.tcg.data.condition
 import it.cartella.tcg.data.languageOf
 import it.cartella.tcg.data.unitValue
@@ -232,7 +232,7 @@ private fun RowScope.Stat(value: String, label: String) {
 @Composable
 private fun OwnedRow(
     card: OwnedCard,
-    factors: Map<Condition, Double>,
+    factors: ValueFactors,
     onOpen: (OwnedCard) -> Unit,
 ) {
     ElevatedCard(onClick = { onOpen(card) }) {
