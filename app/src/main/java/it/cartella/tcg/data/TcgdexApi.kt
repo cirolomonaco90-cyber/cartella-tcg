@@ -107,6 +107,13 @@ object TcgdexApi {
         val setCount = set?.get("cardCount") as? JsonObject
         val variants = o["variants"] as? JsonObject
         fun flag(key: String) = (variants?.get(key) as? JsonPrimitive)?.booleanOrNull ?: false
+        val third = o["thirdParty"] as? JsonObject
+        val variantList = parseVariants(o["variants_detailed"])
+        val cmIds = buildSet {
+            third?.get("cardmarket").int()?.let { add(it) }
+            ((o["pricing"] as? JsonObject)?.get("cardmarket") as? JsonObject)?.get("idProduct").int()?.let { add(it) }
+            variantList.forEach { v -> v.cardmarketId?.let { add(it) } }
+        }
         return CardDetail(
             id = o["id"].str() ?: id,
             localId = o["localId"].str() ?: "",
@@ -121,7 +128,11 @@ object TcgdexApi {
             hasHolo = flag("holo"),
             hasFirstEdition = flag("firstEdition"),
             pricing = parsePricing(o["pricing"]),
-            variantPricing = parseVariants(o["variants_detailed"]),
+            variantPricing = variantList,
+            setId = set?.get("id").str() ?: id.substringBeforeLast('-'),
+            cardmarketIds = cmIds,
+            cardtraderId = third?.get("cardtrader").int()
+                ?: variantList.firstNotNullOfOrNull { it.cardtraderId },
         )
     }
 
@@ -191,6 +202,15 @@ object TcgdexApi {
         merged + l.orEmpty().filter { it.id !in enIds }
     }
 
+    @Volatile
+    private var englishSetNames: Map<String, String>? = null
+
+    /** Nome inglese di un set (serve per trovarlo su CardTrader). */
+    suspend fun englishSetName(setId: String): String? {
+        val cached = englishSetNames ?: sets("en").associate { it.id to it.name }.also { englishSetNames = it }
+        return cached[setId]
+    }
+
     /**
      * Come [card], ma:
      * - se la carta non esiste nella lingua scelta usa i dati inglesi ([CardDetail.dataFromEnglish]);
@@ -251,10 +271,13 @@ object TcgdexApi {
             val o = item as? JsonObject ?: return@mapNotNull null
             val type = o["type"].str() ?: return@mapNotNull null
             val stamps = (o["stamp"] as? JsonArray)?.mapNotNull { it.str() }.orEmpty()
+            val third = o["thirdParty"] as? JsonObject
             VariantPricing(
                 type = type,
                 firstEdition = stamps.any { it.startsWith("1st-edition") },
                 pricing = parsePricing(o["pricing"]),
+                cardmarketId = third?.get("cardmarket").int(),
+                cardtraderId = third?.get("cardtrader").int(),
             )
         }
     }

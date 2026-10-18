@@ -1,6 +1,7 @@
 package it.cartella.tcg.data
 
 import android.content.Context
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Delete
@@ -11,13 +12,17 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 /**
  * Una riga = una "copia" posseduta: stessa carta + lingua + condizione + variante.
- * [baseAmount] è il prezzo di riferimento salvato; il valore finale si calcola al volo
- * applicando il coefficiente della condizione, così cambiare le percentuali aggiorna
- * subito la collezione senza rete.
+ *
+ * Salviamo i dati grezzi delle due fonti e calcoliamo il valore al volo con [valuation]:
+ * - [baseAmount]/[currency]: prezzo Cardmarket (o TCGplayer) Near Mint, uguale per tutte le lingue;
+ * - [ctAmount]/[ctCurrency]/[ctCount]: stima Near Mint dalle offerte CardTrader nella lingua della copia.
+ * Così cambiare le percentuali o i coefficienti aggiorna subito la collezione, senza rete.
  */
 @Entity(tableName = "owned_cards")
 data class OwnedCard(
@@ -37,6 +42,12 @@ data class OwnedCard(
     val priceSource: String?,
     val priceUpdated: Long?,
     val addedAt: Long,
+    // --- dalla versione 2 del database: prezzi per lingua da CardTrader
+    val ctAmount: Double? = null,
+    val ctCurrency: String? = null,
+    @ColumnInfo(defaultValue = "0") val ctCount: Int = 0,
+    val ctBlueprint: Int? = null,
+    val ctUpdated: Long? = null,
 )
 
 val OwnedCard.condition: Condition
@@ -45,18 +56,50 @@ val OwnedCard.condition: Condition
 val OwnedCard.variant: Variant
     get() = Variant.entries.firstOrNull { it.name == variantName } ?: Variant.NORMAL
 
-/** Coefficienti scelti dall'utente: per condizione e (correzione) per lingua. */
+/**
+ * Coefficienti per il calcolo del valore:
+ * - per condizione (scelti dall'utente);
+ * - per lingua: imparati dalla collezione ([learned]) se ci sono abbastanza carte,
+ *   altrimenti quelli impostati a mano ([language], default 100%).
+ */
 data class ValueFactors(
     val condition: Map<Condition, Double> = Condition.entries.associateWith { it.defaultFactor },
     val language: Map<String, Double> = emptyMap(),
+    val learned: Map<String, LearnedCoef> = emptyMap(),
 ) {
     fun of(c: Condition): Double = condition[c] ?: c.defaultFactor
-    fun ofLang(lang: String): Double = language[lang] ?: 1.0
+    fun manualLang(lang: String): Double = language[lang] ?: 1.0
+    fun learnedLang(lang: String): LearnedCoef? =
+        learned[lang]?.takeIf { it.samples >= PriceEngine.MIN_LEARN }
+    fun ofLang(lang: String): Double = learnedLang(lang)?.ratio ?: manualLang(lang)
 }
 
-/** Valore di una singola copia: prezzo di riferimento × condizione × correzione lingua. */
-fun OwnedCard.unitValue(f: ValueFactors): Double? =
-    baseAmount?.let { it * f.of(condition) * f.ofLang(lang) }
+data class RowValue(val unit: Double, val currency: String, val breakdown: PriceBreakdown)
+
+/** Valore di una singola copia: prezzo di riferimento per la sua lingua × condizione. */
+fun OwnedCard.valuation(f: ValueFactors): RowValue? {
+    val b = PriceEngine.combine(
+        cm = baseAmount,
+        cmCurrency = currency,
+        ct = ctAmount,
+        ctCurrency = ctCurrency,
+        ctOffers = ctCount,
+        langCoef = f.ofLang(lang),
+        langCoefLearned = f.learnedLang(lang) != null,
+    ) ?: return null
+    return RowValue(b.nmAmount * f.of(condition), b.currency, b)
+}
+
+fun OwnedCard.unitValue(f: ValueFactors): Double? = valuation(f)?.unit
+
+/** Campioni per imparare il coefficiente di lingua (solo dati affidabili, in euro). */
+fun List<OwnedCard>.learningSamples(): List<PriceEngine.LearningSample> = mapNotNull { r ->
+    val cm = r.baseAmount ?: return@mapNotNull null
+    val ct = r.ctAmount ?: return@mapNotNull null
+    if (r.ctCount < PriceEngine.MIN_OFFERS_FOR_LEARNING) return@mapNotNull null
+    if (r.currency != "EUR" || r.ctCurrency != "EUR" || r.priceSource != "Cardmarket") return@mapNotNull null
+    PriceEngine.LearningSample(r.lang, "${r.cardId}|${r.variantName}", cm, ct)
+}
 
 @Dao
 interface OwnedCardDao {
@@ -91,7 +134,18 @@ interface OwnedCardDao {
     suspend fun delete(card: OwnedCard)
 }
 
-@Database(entities = [OwnedCard::class], version = 1, exportSchema = false)
+/** v1 -> v2: colonne per i prezzi CardTrader. La collezione esistente resta intatta. */
+val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE owned_cards ADD COLUMN ctAmount REAL")
+        db.execSQL("ALTER TABLE owned_cards ADD COLUMN ctCurrency TEXT")
+        db.execSQL("ALTER TABLE owned_cards ADD COLUMN ctCount INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE owned_cards ADD COLUMN ctBlueprint INTEGER")
+        db.execSQL("ALTER TABLE owned_cards ADD COLUMN ctUpdated INTEGER")
+    }
+}
+
+@Database(entities = [OwnedCard::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun dao(): OwnedCardDao
 
@@ -104,7 +158,7 @@ abstract class AppDatabase : RoomDatabase() {
                 context.applicationContext,
                 AppDatabase::class.java,
                 "cartella.db",
-            ).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2).build().also { instance = it }
         }
     }
 }

@@ -64,6 +64,8 @@ data class VariantPricing(
     val type: String,
     val firstEdition: Boolean,
     val pricing: Pricing?,
+    val cardmarketId: Int? = null,
+    val cardtraderId: Int? = null,
 )
 
 data class CardDetail(
@@ -85,4 +87,9 @@ data class CardDetail(
     val imageFromEnglish: Boolean = false,
     /** true se TCGdex non ha la carta nella lingua scelta e tutti i dati sono quelli inglesi. */
     val dataFromEnglish: Boolean = false,
+    val setId: String = "",
+    /** Id prodotto Cardmarket della carta (radice + varianti): servono per trovarla su CardTrader. */
+    val cardmarketIds: Set<Int> = emptySet(),
+    /** Id "blueprint" CardTrader, quando TCGdex li conosce già. */
+    val cardtraderId: Int? = null,
 )

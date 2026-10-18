@@ -51,6 +51,7 @@ import it.cartella.tcg.data.ValueFactors
 import it.cartella.tcg.data.condition
 import it.cartella.tcg.data.languageOf
 import it.cartella.tcg.data.unitValue
+import it.cartella.tcg.data.valuation
 import it.cartella.tcg.data.variant
 
 private val SORT_LABELS = listOf("Recenti", "Valore", "Nome")
@@ -65,11 +66,11 @@ fun CollectionScreen(vm: AppViewModel, onOpen: (OwnedCard) -> Unit, onGoSearch: 
     var nameFilter by rememberSaveable { mutableStateOf("") }
     var sort by rememberSaveable { mutableIntStateOf(0) }
 
-    val totals = owned
-        .filter { it.baseAmount != null && it.currency != null }
-        .groupBy { it.currency!! }
-        .mapValues { (_, rows) -> rows.sumOf { (it.unitValue(factors) ?: 0.0) * it.quantity } }
-    val unpriced = owned.count { it.baseAmount == null }
+    val values = owned.mapNotNull { row -> row.valuation(factors)?.let { row to it } }
+    val totals = values
+        .groupBy { it.second.currency }
+        .mapValues { (_, rows) -> rows.sumOf { (row, v) -> v.unit * row.quantity } }
+    val unpriced = owned.size - values.size
     val copies = owned.sumOf { it.quantity }
     val languages = owned.map { it.lang }.distinct()
 
@@ -264,8 +265,9 @@ private fun OwnedRow(
                 }
             }
             Column(horizontalAlignment = Alignment.End) {
-                val unit = card.unitValue(factors)
-                val cur = card.currency
+                val v = card.valuation(factors)
+                val unit = v?.unit
+                val cur = v?.currency
                 Text(
                     if (unit != null && cur != null) money(unit * card.quantity, cur) else "—",
                     style = MaterialTheme.typography.titleSmall,
@@ -277,6 +279,14 @@ private fun OwnedRow(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // Da dove viene il prezzo: offerte reali nella lingua o stima corretta.
+                if (v != null) {
+                    Text(
+                        if (v.breakdown.ctWeight > 0) "${card.ctCount} offerte ${card.lang.uppercase()}" else "stima",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }

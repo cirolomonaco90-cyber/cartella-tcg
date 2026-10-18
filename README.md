@@ -17,7 +17,22 @@ Tema personalizzato (chiaro e scuro) con testate a gradiente, selettore di lingu
 
 L'app legge carte, set, immagini e prezzi dall'API REST pubblica di TCGdex (`https://api.tcgdex.net/v2/{lingua}/...`, nessuna chiave richiesta). In Impostazioni ci sono i link a [tcgdex.dev](https://tcgdex.dev) e alla pagina di stato con le lingue disponibili. Il client è in `app/src/main/java/it/cartella/tcg/data/TcgdexApi.kt`.
 
-## Come si calcola il valore
+## Prezzi per lingua (algoritmo)
+
+Fonti, senza eBay:
+- **Cardmarket** (via TCGdex): prezzo affidabile, ma uguale per tutte le lingue. L'API di Cardmarket non accetta nuovi sviluppatori.
+- **CardTrader** (API ufficiale, token personale gratuito): offerte in vendita **filtrate per lingua**. La carta viene trovata tramite l'id del prodotto Cardmarket, che CardTrader riporta per ogni carta, con ripiego su numero e nome.
+
+Per ogni copia (carta, lingua, variante, condizione):
+1. **Offerte CardTrader** nella lingua: esclusi graded e lotti. Ogni prezzo viene riportato a Near Mint dividendo per il coefficiente della sua condizione, poi si prende la **mediana delle 5 più economiche**, scartando un'eventuale offerta anomala (meno della metà della successiva).
+2. **Cardmarket × coefficiente lingua**.
+3. **Fusione pesata**: peso CardTrader = offerte / 6, al massimo 100%. Con 6 o più offerte conta solo CardTrader.
+4. **Coefficiente lingua imparato**: mediana dei rapporti CardTrader/Cardmarket sulle carte della collezione con almeno 3 offerte. Si usa da 5 carte in su, altrimenti vale quello impostato a mano.
+5. × percentuale della condizione.
+
+Il codice è in `data/PriceEngine.kt` (funzioni pure, testate in `PriceEngineTest`) e in `data/CardTraderApi.kt`. Nella scheda di ogni carta l'app mostra il dettaglio del calcolo.
+
+## Come si calcola il prezzo di riferimento Cardmarket
 
 `prezzo di riferimento × % condizione × % correzione lingua`
 

@@ -51,9 +51,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import it.cartella.tcg.AppViewModel
+import it.cartella.tcg.CtState
 import it.cartella.tcg.data.CardDetail
+import it.cartella.tcg.data.CardTraderApi
 import it.cartella.tcg.data.Condition
+import it.cartella.tcg.data.CtOffer
 import it.cartella.tcg.data.MarketLinks
+import it.cartella.tcg.data.PriceEngine
+import it.cartella.tcg.data.ValueFactors
 import it.cartella.tcg.data.Valuation
 import it.cartella.tcg.data.Variant
 import it.cartella.tcg.data.condition
@@ -269,9 +274,11 @@ fun CardDetailSheet(vm: AppViewModel, onDismiss: () -> Unit) {
                 card = card,
                 variant = variant,
                 condition = condition,
-                conditionFactor = factors.of(condition),
-                langFactor = factors.ofLang(d.lang),
-                langLabel = languageOf(d.lang).label,
+                factors = factors,
+                lang = d.lang,
+                ctState = d.ctState,
+                ctOffers = d.ctOffers,
+                ctMessage = d.ctMessage,
                 quantity = quantity,
                 loading = d.loading,
             )
@@ -293,6 +300,12 @@ fun CardDetailSheet(vm: AppViewModel, onDismiss: () -> Unit) {
                         onClick = { uri.openUri(MarketLinks.cardmarketSearch(card.name)) },
                         modifier = Modifier.weight(1f),
                     ) { Text("Cardmarket") }
+                }
+                d.ctBlueprint?.let { bp ->
+                    OutlinedButton(
+                        onClick = { uri.openUri(CardTraderApi.cardUrl(bp)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Vedi le offerte su CardTrader") }
                 }
             }
 
@@ -354,19 +367,39 @@ private fun Section(title: String, content: @Composable () -> Unit) {
     }
 }
 
+
+/**
+ * Riquadro del valore: mostra il risultato e, sotto, come è stato calcolato
+ * (Cardmarket corretto per lingua + offerte CardTrader nella lingua della copia).
+ */
 @Composable
 private fun ValueBox(
     card: CardDetail?,
     variant: Variant,
     condition: Condition,
-    conditionFactor: Double,
-    langFactor: Double,
-    langLabel: String,
+    factors: ValueFactors,
+    lang: String,
+    ctState: CtState,
+    ctOffers: List<CtOffer>,
+    ctMessage: String?,
     quantity: Int,
     loading: Boolean,
 ) {
     val base = Valuation.baseValue(card, variant)
-    val factor = conditionFactor * langFactor
+    val ct = if (ctState == CtState.OK) PriceEngine.estimate(ctOffers, variant) else null
+    val langLabel = languageOf(lang).label
+    val breakdown = PriceEngine.combine(
+        cm = base?.amount,
+        cmCurrency = base?.currency,
+        ct = ct?.nmAmount,
+        ctCurrency = ct?.currency,
+        ctOffers = ct?.offers ?: 0,
+        langCoef = factors.ofLang(lang),
+        langCoefLearned = factors.learnedLang(lang) != null,
+    )
+    val condFactor = factors.of(condition)
+    val muted = OnAmber.copy(alpha = 0.85f)
+
     Box(
         Modifier
             .fillMaxWidth()
@@ -377,60 +410,89 @@ private fun ValueBox(
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
-                "VALORE STIMATO",
+                "VALORE STIMATO · ${langLabel.uppercase()}",
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold,
                 color = OnAmber.copy(alpha = 0.75f),
             )
             when {
-                loading -> Text(
-                    "Caricamento prezzi…",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = OnAmber,
-                )
-
-                card == null -> Text(
-                    "Nessun dato disponibile",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = OnAmber,
-                )
-
-                base == null -> Text(
+                loading -> Text("Caricamento prezzi…", style = MaterialTheme.typography.bodyLarge, color = OnAmber)
+                card == null -> Text("Nessun dato disponibile", style = MaterialTheme.typography.bodyLarge, color = OnAmber)
+                breakdown == null -> Text(
                     "Prezzo non disponibile per questa carta o variante. Controlla i venduti su eBay qui sotto.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = OnAmber,
                 )
-
                 else -> {
+                    val unit = breakdown.nmAmount * condFactor
                     Text(
-                        money(base.amount * factor, base.currency),
+                        money(unit, breakdown.currency),
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.ExtraBold,
                         color = OnAmber,
                     )
                     if (quantity > 1) {
                         Text(
-                            "${money(base.amount * factor * quantity, base.currency)} per $quantity copie",
+                            "${money(unit * quantity, breakdown.currency)} per $quantity copie",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = OnAmber,
                         )
                     }
-                    val langPart = if (langFactor != 1.0) {
-                        " × ${(langFactor * 100).roundToInt()}% ($langLabel)"
-                    } else {
-                        ""
+                    Spacer(Modifier.height(6.dp))
+                    Text("Come è calcolato", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = OnAmber)
+
+                    // 1) Cardmarket
+                    if (base != null && breakdown.cmAdjusted != null) {
+                        val coefPct = (breakdown.langCoef * 100).roundToInt()
+                        val coefWhy = when {
+                            breakdown.langCoefLearned ->
+                                "imparato da ${factors.learnedLang(lang)?.samples} carte della tua collezione"
+                            coefPct == 100 -> "nessuna correzione"
+                            else -> "impostato da te"
+                        }
+                        Text(
+                            "• ${base.source} (tutte le lingue): ${money(base.amount, base.currency)} × $coefPct% " +
+                                "per $langLabel ($coefWhy) = ${money(breakdown.cmAdjusted, base.currency)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = muted,
+                        )
+                    }
+
+                    // 2) CardTrader
+                    val ctLine = when (ctState) {
+                        CtState.OFF -> "• CardTrader: collega il tuo account in Impostazioni per i prezzi reali in $langLabel"
+                        CtState.LOADING -> "• CardTrader: cerco le offerte in $langLabel…"
+                        CtState.NOT_FOUND -> "• CardTrader: carta non trovata"
+                        CtState.ERROR -> "• CardTrader: ${ctMessage ?: "errore"}"
+                        CtState.OK -> if (ct == null) {
+                            "• CardTrader: nessuna offerta in $langLabel per questa variante"
+                        } else {
+                            "• CardTrader, ${ct.offers} offerte in $langLabel: la più bassa ${money(ct.cheapest, ct.currency)}, " +
+                                "stima Near Mint ${money(ct.nmAmount, ct.currency)}"
+                        }
+                    }
+                    Text(ctLine, style = MaterialTheme.typography.bodySmall, color = muted)
+
+                    // 3) Fusione e condizione
+                    val weightPct = (breakdown.ctWeight * 100).roundToInt()
+                    if (weightPct in 1..99) {
+                        Text(
+                            "• Peso: CardTrader $weightPct%, Cardmarket ${100 - weightPct}% " +
+                                "(più offerte ci sono, più conta CardTrader)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = muted,
+                        )
                     }
                     Text(
-                        "Riferimento ${money(base.amount, base.currency)} (${base.source}) " +
-                            "× ${(conditionFactor * 100).roundToInt()}% (${condition.labelIt})$langPart",
+                        "• Near Mint ${money(breakdown.nmAmount, breakdown.currency)} × ${(condFactor * 100).roundToInt()}% " +
+                            "per ${condition.labelIt}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = OnAmber.copy(alpha = 0.85f),
+                        color = muted,
                     )
-                    if (base.approximate) {
+                    if (base?.approximate == true && breakdown.ctWeight < 1.0) {
                         Text(
-                            "Attenzione: prezzo della versione base, non di questa variante. " +
-                                "Il valore reale può essere molto diverso.",
+                            "Attenzione: Cardmarket non ha un prezzo per questa variante, è usato quello della versione base.",
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.SemiBold,
                             color = OnAmber,
@@ -438,11 +500,6 @@ private fun ValueBox(
                     }
                 }
             }
-            Text(
-                "Stima dai prezzi medi di mercato (uguali per tutte le lingue), non dai singoli venduti.",
-                style = MaterialTheme.typography.labelSmall,
-                color = OnAmber.copy(alpha = 0.75f),
-            )
         }
     }
 }

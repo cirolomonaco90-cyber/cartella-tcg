@@ -18,7 +18,18 @@ class SettingsStore(private val context: Context) {
     private fun factorKey(c: Condition) = doublePreferencesKey("factor_${c.code}")
     private fun langFactorKey(code: String) = doublePreferencesKey("langfactor_$code")
 
+    private val ctTokenKey = stringPreferencesKey("cardtrader_token")
+
     val language: Flow<String> = context.dataStore.data.map { it[langKey] ?: "it" }
+
+    /** Token personale CardTrader (vuoto = prezzi per lingua solo stimati). */
+    val cardTraderToken: Flow<String> = context.dataStore.data.map { it[ctTokenKey].orEmpty() }
+
+    suspend fun setCardTraderToken(token: String) {
+        context.dataStore.edit {
+            if (token.isBlank()) it.remove(ctTokenKey) else it[ctTokenKey] = token.trim()
+        }
+    }
 
     val factors: Flow<ValueFactors> = context.dataStore.data.map { prefs ->
         ValueFactors(
