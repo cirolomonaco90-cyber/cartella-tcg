@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # serve per pubblicare l'APK nella release "ultima-build"
     steps:
       - uses: actions/checkout@v4
 
@@ -27,3 +29,18 @@ jobs:
           name: cartella-tcg-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      # APK scaricabile direttamente dal telefono:
+      # https://github.com/<utente>/cartella-tcg/releases/tag/ultima-build
+      - name: Pubblica l'APK nella release "ultima-build"
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk cartella-tcg.apk
+          gh release delete ultima-build --yes --cleanup-tag || true
+          gh release create ultima-build cartella-tcg.apk \
+            --target "$GITHUB_SHA" \
+            --title "Ultima build (prova)" \
+            --notes "APK di prova generato automaticamente dal commit ${GITHUB_SHA::7}. Non firmato per il Play Store." \
+            --prerelease
