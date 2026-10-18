@@ -51,11 +51,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import it.cartella.tcg.AppViewModel
-import it.cartella.tcg.CtState
+import it.cartella.tcg.LangPriceState
 import it.cartella.tcg.data.CardDetail
-import it.cartella.tcg.data.CardTraderApi
+import it.cartella.tcg.data.CardLangPrice
 import it.cartella.tcg.data.Condition
-import it.cartella.tcg.data.CtOffer
 import it.cartella.tcg.data.MarketLinks
 import it.cartella.tcg.data.PriceEngine
 import it.cartella.tcg.data.ValueFactors
@@ -276,9 +275,8 @@ fun CardDetailSheet(vm: AppViewModel, onDismiss: () -> Unit) {
                 condition = condition,
                 factors = factors,
                 lang = d.lang,
-                ctState = d.ctState,
-                ctOffers = d.ctOffers,
-                ctMessage = d.ctMessage,
+                langState = d.langState,
+                langPrice = d.langPrice,
                 quantity = quantity,
                 loading = d.loading,
             )
@@ -300,12 +298,6 @@ fun CardDetailSheet(vm: AppViewModel, onDismiss: () -> Unit) {
                         onClick = { uri.openUri(MarketLinks.cardmarketSearch(card.name)) },
                         modifier = Modifier.weight(1f),
                     ) { Text("Cardmarket") }
-                }
-                d.ctBlueprint?.let { bp ->
-                    OutlinedButton(
-                        onClick = { uri.openUri(CardTraderApi.cardUrl(bp)) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Vedi le offerte su CardTrader") }
                 }
             }
 
@@ -368,6 +360,12 @@ private fun Section(title: String, content: @Composable () -> Unit) {
 }
 
 
+/** "2026-10-18T02:40:00Z" -> "18/10/2026" */
+private fun shortDate(iso: String?): String? {
+    val d = iso?.take(10)?.split("-") ?: return null
+    return if (d.size == 3) "${d[2]}/${d[1]}/${d[0]}" else null
+}
+
 /**
  * Riquadro del valore: mostra il risultato e, sotto, come è stato calcolato
  * (Cardmarket corretto per lingua + offerte CardTrader nella lingua della copia).
@@ -379,23 +377,23 @@ private fun ValueBox(
     condition: Condition,
     factors: ValueFactors,
     lang: String,
-    ctState: CtState,
-    ctOffers: List<CtOffer>,
-    ctMessage: String?,
+    langState: LangPriceState,
+    langPrice: CardLangPrice?,
     quantity: Int,
     loading: Boolean,
 ) {
     val base = Valuation.baseValue(card, variant)
-    val ct = if (ctState == CtState.OK) PriceEngine.estimate(ctOffers, variant) else null
+    val est = langPrice?.estimates?.get(variant)
+    val coef = langPrice?.coef
     val langLabel = languageOf(lang).label
     val breakdown = PriceEngine.combine(
         cm = base?.amount,
         cmCurrency = base?.currency,
-        ct = ct?.nmAmount,
-        ctCurrency = ct?.currency,
-        ctOffers = ct?.offers ?: 0,
-        langCoef = factors.ofLang(lang),
-        langCoefLearned = factors.learnedLang(lang) != null,
+        ct = est?.nmAmount,
+        ctCurrency = est?.currency,
+        ctOffers = est?.offers ?: 0,
+        langCoef = coef?.ratio ?: 1.0,
+        langCoefLearned = coef != null,
     )
     val condFactor = factors.of(condition)
     val muted = OnAmber.copy(alpha = 0.85f)
@@ -442,44 +440,46 @@ private fun ValueBox(
                     Spacer(Modifier.height(6.dp))
                     Text("Come è calcolato", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = OnAmber)
 
-                    // 1) Cardmarket
+                    // Cardmarket corretto per lingua
                     if (base != null && breakdown.cmAdjusted != null) {
                         val coefPct = (breakdown.langCoef * 100).roundToInt()
                         val coefWhy = when {
-                            breakdown.langCoefLearned ->
-                                "imparato da ${factors.learnedLang(lang)?.samples} carte della tua collezione"
-                            coefPct == 100 -> "nessuna correzione"
-                            else -> "impostato da te"
+                            coef != null && langPrice?.coefFromSet == true ->
+                                "calcolato su ${coef.samples} carte $langLabel di questo set"
+                            coef != null -> "media $langLabel su ${coef.samples} carte"
+                            else -> "nessuna correzione disponibile"
                         }
                         Text(
                             "• ${base.source} (tutte le lingue): ${money(base.amount, base.currency)} × $coefPct% " +
-                                "per $langLabel ($coefWhy) = ${money(breakdown.cmAdjusted, base.currency)}",
+                                "($coefWhy) = ${money(breakdown.cmAdjusted, base.currency)}",
                             style = MaterialTheme.typography.bodySmall,
                             color = muted,
                         )
                     }
 
-                    // 2) CardTrader
-                    val ctLine = when (ctState) {
-                        CtState.OFF -> "• CardTrader: collega il tuo account in Impostazioni per i prezzi reali in $langLabel"
-                        CtState.LOADING -> "• CardTrader: cerco le offerte in $langLabel…"
-                        CtState.NOT_FOUND -> "• CardTrader: carta non trovata"
-                        CtState.ERROR -> "• CardTrader: ${ctMessage ?: "errore"}"
-                        CtState.OK -> if (ct == null) {
-                            "• CardTrader: nessuna offerta in $langLabel per questa variante"
+                    // Offerte nella lingua
+                    val offersLine = when (langState) {
+                        LangPriceState.LOADING -> "• Offerte in $langLabel: caricamento…"
+                        LangPriceState.UNSUPPORTED ->
+                            "• Prezzi specifici per $langLabel non ancora disponibili (lingue coperte: EN, IT, FR, DE, ES, PT)"
+                        LangPriceState.UNAVAILABLE ->
+                            "• Prezzi per lingua non raggiungibili ora: controlla la connessione"
+                        LangPriceState.OK -> if (est == null) {
+                            "• Nessuna offerta in $langLabel per questa variante su CardTrader"
                         } else {
-                            "• CardTrader, ${ct.offers} offerte in $langLabel: la più bassa ${money(ct.cheapest, ct.currency)}, " +
-                                "stima Near Mint ${money(ct.nmAmount, ct.currency)}"
+                            val date = shortDate(langPrice?.updated)?.let { " (dati del $it)" }.orEmpty()
+                            "• Offerte in $langLabel su CardTrader: ${est.offers}, stima Near Mint " +
+                                "${money(est.nmAmount, est.currency)}$date"
                         }
                     }
-                    Text(ctLine, style = MaterialTheme.typography.bodySmall, color = muted)
+                    Text(offersLine, style = MaterialTheme.typography.bodySmall, color = muted)
 
-                    // 3) Fusione e condizione
+                    // Fusione e condizione
                     val weightPct = (breakdown.ctWeight * 100).roundToInt()
                     if (weightPct in 1..99) {
                         Text(
-                            "• Peso: CardTrader $weightPct%, Cardmarket ${100 - weightPct}% " +
-                                "(più offerte ci sono, più conta CardTrader)",
+                            "• Peso: offerte $weightPct%, Cardmarket ${100 - weightPct}% " +
+                                "(più offerte ci sono, più contano)",
                             style = MaterialTheme.typography.bodySmall,
                             color = muted,
                         )

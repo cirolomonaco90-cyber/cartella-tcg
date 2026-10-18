@@ -1,0 +1,60 @@
+name: Prezzi per lingua
+
+# Ogni notte scarica le offerte CardTrader di tutte le carte Pokémon nelle lingue occidentali,
+# calcola prezzi e coefficienti di lingua e pubblica i file sul branch "prezzi",
+# da cui l'app li scarica:
+#   https://raw.githubusercontent.com/<utente>/cartella-tcg/prezzi/v1/<lingua>.json
+# Serve il secret del repo CARDTRADER_TOKEN (Settings > Secrets and variables > Actions).
+
+on:
+  schedule:
+    - cron: "17 2 * * *" # 02:17 UTC, ogni giorno
+  workflow_dispatch:
+    inputs:
+      max_expansions:
+        description: "Limita il numero di espansioni (solo per prove, vuoto = tutte)"
+        required: false
+        default: ""
+
+concurrency:
+  group: prezzi
+  cancel-in-progress: false
+
+jobs:
+  prezzi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test
+        working-directory: prezzi
+        run: npm test
+
+      - name: Calcola i prezzi
+        env:
+          CARDTRADER_TOKEN: ${{ secrets.CARDTRADER_TOKEN }}
+          MAX_EXPANSIONS: ${{ inputs.max_expansions }}
+        run: node prezzi/src/build.js out
+
+      - name: Pubblica sul branch "prezzi"
+        if: hashFiles('out/v1/catalog.json') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd out
+          echo "Aggiornato: $(date -u '+%Y-%m-%d %H:%M UTC')" > README.md
+          git init -q -b prezzi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Prezzi del $(date -u +%F)"
+          # Un solo commit, sovrascritto ogni volta: il branch non cresce.
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" prezzi
+          ls -la v1

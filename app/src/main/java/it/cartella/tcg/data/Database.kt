@@ -48,6 +48,9 @@ data class OwnedCard(
     @ColumnInfo(defaultValue = "0") val ctCount: Int = 0,
     val ctBlueprint: Int? = null,
     val ctUpdated: Long? = null,
+    // --- dalla versione 3: coefficiente di lingua (del set o della lingua) calcolato dal job notturno
+    val langCoef: Double? = null,
+    val langCoefSamples: Int? = null,
 )
 
 val OwnedCard.condition: Condition
@@ -56,22 +59,11 @@ val OwnedCard.condition: Condition
 val OwnedCard.variant: Variant
     get() = Variant.entries.firstOrNull { it.name == variantName } ?: Variant.NORMAL
 
-/**
- * Coefficienti per il calcolo del valore:
- * - per condizione (scelti dall'utente);
- * - per lingua: imparati dalla collezione ([learned]) se ci sono abbastanza carte,
- *   altrimenti quelli impostati a mano ([language], default 100%).
- */
+/** Percentuali per condizione scelte dall'utente (l'unica cosa regolabile). */
 data class ValueFactors(
     val condition: Map<Condition, Double> = Condition.entries.associateWith { it.defaultFactor },
-    val language: Map<String, Double> = emptyMap(),
-    val learned: Map<String, LearnedCoef> = emptyMap(),
 ) {
     fun of(c: Condition): Double = condition[c] ?: c.defaultFactor
-    fun manualLang(lang: String): Double = language[lang] ?: 1.0
-    fun learnedLang(lang: String): LearnedCoef? =
-        learned[lang]?.takeIf { it.samples >= PriceEngine.MIN_LEARN }
-    fun ofLang(lang: String): Double = learnedLang(lang)?.ratio ?: manualLang(lang)
 }
 
 data class RowValue(val unit: Double, val currency: String, val breakdown: PriceBreakdown)
@@ -84,22 +76,13 @@ fun OwnedCard.valuation(f: ValueFactors): RowValue? {
         ct = ctAmount,
         ctCurrency = ctCurrency,
         ctOffers = ctCount,
-        langCoef = f.ofLang(lang),
-        langCoefLearned = f.learnedLang(lang) != null,
+        langCoef = langCoef ?: 1.0,
+        langCoefLearned = langCoef != null,
     ) ?: return null
     return RowValue(b.nmAmount * f.of(condition), b.currency, b)
 }
 
 fun OwnedCard.unitValue(f: ValueFactors): Double? = valuation(f)?.unit
-
-/** Campioni per imparare il coefficiente di lingua (solo dati affidabili, in euro). */
-fun List<OwnedCard>.learningSamples(): List<PriceEngine.LearningSample> = mapNotNull { r ->
-    val cm = r.baseAmount ?: return@mapNotNull null
-    val ct = r.ctAmount ?: return@mapNotNull null
-    if (r.ctCount < PriceEngine.MIN_OFFERS_FOR_LEARNING) return@mapNotNull null
-    if (r.currency != "EUR" || r.ctCurrency != "EUR" || r.priceSource != "Cardmarket") return@mapNotNull null
-    PriceEngine.LearningSample(r.lang, "${r.cardId}|${r.variantName}", cm, ct)
-}
 
 @Dao
 interface OwnedCardDao {
@@ -145,7 +128,15 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
-@Database(entities = [OwnedCard::class], version = 2, exportSchema = false)
+/** v2 -> v3: coefficiente di lingua salvato per copia. */
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE owned_cards ADD COLUMN langCoef REAL")
+        db.execSQL("ALTER TABLE owned_cards ADD COLUMN langCoefSamples INTEGER")
+    }
+}
+
+@Database(entities = [OwnedCard::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun dao(): OwnedCardDao
 
@@ -158,7 +149,7 @@ abstract class AppDatabase : RoomDatabase() {
                 context.applicationContext,
                 AppDatabase::class.java,
                 "cartella.db",
-            ).addMigrations(MIGRATION_1_2).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
         }
     }
 }

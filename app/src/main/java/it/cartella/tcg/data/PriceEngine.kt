@@ -21,8 +21,8 @@ data class CtEstimate(
     val currency: String,
     /** Offerte usate nel calcolo (dopo i filtri). */
     val offers: Int,
-    /** Offerta più bassa così com'è, senza normalizzazione. */
-    val cheapest: Double,
+    /** Offerta più bassa così com'è, senza normalizzazione (null se non nota). */
+    val cheapest: Double? = null,
 )
 
 /** Coefficiente di lingua imparato dalla collezione: prezzo lingua / prezzo Cardmarket. */
@@ -51,9 +51,9 @@ data class PriceBreakdown(
  *    offerta anomala molto più bassa delle altre.
  * 3. I due prezzi si fondono: più offerte ci sono, più conta CardTrader (da 6 offerte in su
  *    conta solo lui). Con poche offerte si usa Cardmarket × coefficiente della lingua.
- * 4. Il coefficiente della lingua si impara dalla collezione stessa: per le carte con
- *    abbastanza offerte si calcola il rapporto CardTrader / Cardmarket e se ne prende la
- *    mediana per lingua. Con meno di [MIN_LEARN] carte si usa quello impostato a mano.
+ * 4. Il coefficiente della lingua lo calcola ogni notte il job su GitHub Actions
+ *    (prezzi/src/build.js) su tutte le carte con abbastanza offerte: mediana del rapporto
+ *    prezzo lingua / Cardmarket, per set e per lingua. Nessuna configurazione nell'app.
  */
 object PriceEngine {
     const val FULL_WEIGHT_OFFERS = 6

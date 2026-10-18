@@ -74,8 +74,39 @@ export function findBlueprint(blueprints, { cardmarketIds = [], number = "", nam
   return null;
 }
 
+/**
+ * Risposta di /marketplace/products?expansion_id=... : oggetto { blueprintId: [prodotti] }.
+ * @returns {Map<number, object[]>} offerte semplici per blueprint
+ */
+export function parseOffersByBlueprint(json) {
+  const out = new Map();
+  if (!json || typeof json !== "object" || Array.isArray(json)) {
+    for (const o of parseOffersWithId(Array.isArray(json) ? json : [])) push(out, o);
+    return out;
+  }
+  for (const [key, list] of Object.entries(json)) {
+    if (!Array.isArray(list)) continue;
+    for (const o of parseOffersWithId(list, Number(key))) push(out, o);
+  }
+  return out;
+
+  function push(map, o) {
+    if (!Number.isFinite(o.blueprintId)) return;
+    if (!map.has(o.blueprintId)) map.set(o.blueprintId, []);
+    const { blueprintId, ...offer } = o;
+    map.get(blueprintId).push(offer);
+  }
+}
+
+function parseOffersWithId(products, fallbackId) {
+  return parseOffers(products, true).map((o) => ({
+    ...o,
+    blueprintId: Number.isFinite(o.blueprintId) ? o.blueprintId : fallbackId,
+  }));
+}
+
 /** Converte la risposta di /marketplace/products in un elenco di offerte semplici. */
-export function parseOffers(json) {
+export function parseOffers(json, keepId = false) {
   let products = [];
   if (Array.isArray(json)) products = json;
   else if (json && typeof json === "object") {
@@ -95,6 +126,7 @@ export function parseOffers(json) {
       return null;
     };
     out.push({
+      ...(keepId ? { blueprintId: Number(p.blueprint_id) } : {}),
       price: cents / 100,
       currency: p.price?.currency || "EUR",
       condition: typeof props.condition === "string" ? props.condition : null,

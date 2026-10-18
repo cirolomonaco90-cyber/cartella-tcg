@@ -7,12 +7,10 @@ import it.cartella.tcg.data.ApiException
 import it.cartella.tcg.data.AppDatabase
 import it.cartella.tcg.data.CardBrief
 import it.cartella.tcg.data.CardDetail
-import it.cartella.tcg.data.CardTraderApi
+import it.cartella.tcg.data.CardLangPrice
 import it.cartella.tcg.data.Condition
-import it.cartella.tcg.data.CtEstimate
-import it.cartella.tcg.data.CtOffer
-import it.cartella.tcg.data.PriceEngine
-import it.cartella.tcg.data.learningSamples
+import it.cartella.tcg.data.LangData
+import it.cartella.tcg.data.LanguagePrices
 import it.cartella.tcg.data.NotFoundException
 import it.cartella.tcg.data.OwnedCard
 import it.cartella.tcg.data.SetBrief
@@ -32,7 +30,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -55,7 +52,8 @@ data class SearchUiState(
     val error: String? = null,
 )
 
-enum class CtState { OFF, LOADING, OK, NOT_FOUND, ERROR }
+/** Stato dei prezzi per lingua nella scheda carta. */
+enum class LangPriceState { LOADING, OK, UNAVAILABLE, UNSUPPORTED }
 
 data class DetailUiState(
     val open: Boolean = false,
@@ -66,11 +64,9 @@ data class DetailUiState(
     val error: String? = null,
     /** Non nullo quando si modifica una copia già in collezione. */
     val editing: OwnedCard? = null,
-    // --- offerte CardTrader nella lingua della copia
-    val ctState: CtState = CtState.OFF,
-    val ctOffers: List<CtOffer> = emptyList(),
-    val ctBlueprint: Int? = null,
-    val ctMessage: String? = null,
+    // --- prezzi per lingua (dal job notturno) per la lingua della copia
+    val langState: LangPriceState = LangPriceState.LOADING,
+    val langPrice: CardLangPrice? = null,
 )
 
 data class RefreshState(
@@ -90,21 +86,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val settings = SettingsStore(app)
     private val dao = AppDatabase.get(app).dao()
-    private val cardTrader = CardTraderApi(app)
+    private val langPrices = LanguagePrices(app)
 
     private val _language = MutableStateFlow("it")
     val language: StateFlow<String> = _language.asStateFlow()
 
-    val cardTraderToken: StateFlow<String> =
-        settings.cardTraderToken.stateIn(viewModelScope, SharingStarted.Eagerly, "")
-
     val owned: StateFlow<List<OwnedCard>> =
         dao.observeAll().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    /** Coefficienti scelti + coefficienti di lingua imparati dalla collezione. */
     val factors: StateFlow<ValueFactors> =
-        combine(settings.factors, owned) { f, rows -> f.copy(learned = PriceEngine.learn(rows.learningSamples())) }
-            .stateIn(viewModelScope, SharingStarted.Eagerly, ValueFactors())
+        settings.factors.stateIn(viewModelScope, SharingStarted.Eagerly, ValueFactors())
+
+    /** Riepilogo per lingua (coefficiente medio, carte coperte, data) per le Impostazioni. */
+    private val _langSummary = MutableStateFlow<Map<String, LangData?>>(emptyMap())
+    val langSummary: StateFlow<Map<String, LangData?>> = _langSummary.asStateFlow()
 
     /** Quante copie possiedi di ogni carta (tutte le lingue), per i badge e l'avanzamento dei set. */
     val ownedCounts: StateFlow<Map<String, Int>> = owned
@@ -318,9 +313,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val card = res.getOrNull()
             if (card != null) {
                 _detail.update {
-                    it.copy(card = card, loading = false, error = null, ctState = CtState.OFF, ctOffers = emptyList())
+                    it.copy(card = card, loading = false, error = null, langState = LangPriceState.LOADING, langPrice = null)
                 }
-                loadCardTrader(card, d.lang)
+                loadLangPrice(card, d.lang)
             } else {
                 val failure = res.exceptionOrNull()
                 val msg = if (failure is NotFoundException) {
@@ -338,60 +333,48 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _detail.value = DetailUiState()
     }
 
-    // ---------------------------------------------------------------- CardTrader (prezzi per lingua)
-
-    /** Trova la carta su CardTrader e scarica le offerte nella lingua indicata. */
-    private suspend fun cardTraderOffers(card: CardDetail, lang: String): Pair<Int?, List<CtOffer>> {
-        val token = cardTraderToken.value
-        val setName = TcgdexApi.englishSetName(card.setId) ?: card.setName
-        val englishName = if (lang == "en" || card.dataFromEnglish) card.name else null
-        val blueprint = cardTrader.findBlueprint(token, card, setName, englishName) ?: return null to emptyList()
-        return blueprint to cardTrader.offers(token, blueprint, lang)
-    }
+    // ---------------------------------------------------------------- prezzi per lingua
 
     /** Eseguito nel job della scheda carta, così si annulla se la scheda cambia. */
-    private suspend fun loadCardTrader(card: CardDetail, lang: String) {
-        if (cardTraderToken.value.isBlank()) return
-        _detail.update { it.copy(ctState = CtState.LOADING, ctMessage = null) }
-        val res = api { cardTraderOffers(card, lang) }
-        val value = res.getOrNull()
+    private suspend fun loadLangPrice(card: CardDetail, lang: String) {
+        if (LanguagePrices.fileLang(lang) == null) {
+            _detail.update { it.copy(langState = LangPriceState.UNSUPPORTED, langPrice = null) }
+            return
+        }
+        _detail.update { it.copy(langState = LangPriceState.LOADING, langPrice = null) }
+        val price = api { langPrices.forCard(card, lang) }.getOrNull()
         _detail.update {
-            when {
-                value == null -> it.copy(ctState = CtState.ERROR, ctMessage = res.exceptionOrNull()?.userMessage())
-                value.first == null -> it.copy(ctState = CtState.NOT_FOUND)
-                else -> it.copy(ctState = CtState.OK, ctBlueprint = value.first, ctOffers = value.second)
-            }
+            if (price == null) it.copy(langState = LangPriceState.UNAVAILABLE)
+            else it.copy(langState = LangPriceState.OK, langPrice = price)
         }
     }
 
-    /** Stima CardTrader per la variante scelta, se la scheda aperta ha le offerte di quella carta e lingua. */
-    private fun detailEstimate(cardId: String, lang: String, variant: Variant): Pair<Int?, CtEstimate?>? {
+    /** Prezzi per lingua della scheda aperta, se riguardano quella carta e lingua. */
+    private fun detailLangPrice(cardId: String, lang: String): CardLangPrice? {
         val d = _detail.value
-        if (d.card?.id != cardId || d.lang != lang || d.ctState != CtState.OK) return null
-        return d.ctBlueprint to PriceEngine.estimate(d.ctOffers, variant)
+        if (d.card?.id != cardId || d.lang != lang || d.langState != LangPriceState.OK) return null
+        return d.langPrice
     }
 
-    private fun OwnedCard.withCt(blueprint: Int?, est: CtEstimate?, now: Long): OwnedCard = copy(
-        ctAmount = est?.nmAmount,
-        ctCurrency = est?.currency,
-        ctCount = est?.offers ?: 0,
-        ctBlueprint = blueprint,
-        ctUpdated = now,
-    )
+    /** Copia nella riga i dati per lingua (stima della variante e coefficiente). */
+    private fun OwnedCard.withLang(lp: CardLangPrice?, now: Long): OwnedCard {
+        val est = lp?.estimates?.get(variant)
+        return copy(
+            ctAmount = est?.nmAmount,
+            ctCurrency = est?.currency,
+            ctCount = est?.offers ?: 0,
+            ctUpdated = now,
+            langCoef = lp?.coef?.ratio,
+            langCoefSamples = lp?.coef?.samples,
+        )
+    }
 
-    fun saveCardTraderToken(token: String) {
+    /** Carica i riepiloghi per lingua (per le Impostazioni). */
+    fun loadLangSummary(langs: Collection<String>) {
         viewModelScope.launch {
-            settings.setCardTraderToken(token)
-            if (token.isBlank()) {
-                say("Token CardTrader rimosso")
-                return@launch
-            }
-            val res = api { cardTrader.verify(token) }
-            if (res.isSuccess) {
-                say("CardTrader collegato. Usa \"Aggiorna prezzi\" in Collezione per i prezzi per lingua.")
-            } else {
-                say(res.exceptionOrNull()?.userMessage() ?: "Token non verificato")
-            }
+            val map = langs.filter { LanguagePrices.fileLang(it) != null }.distinct()
+                .associateWith { api { langPrices.lang(it) }.getOrNull() }
+            _langSummary.value = map
         }
     }
 
@@ -407,7 +390,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val base = Valuation.baseValue(card, variant)
         val now = System.currentTimeMillis()
         viewModelScope.launch {
-            val ct = detailEstimate(card.id, lang, variant)
+            val lp = detailLangPrice(card.id, lang)
             val existing = dao.find(card.id, lang, condition.name, variant.name)
             if (existing != null) {
                 val merged = existing.copy(
@@ -417,7 +400,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     priceSource = base?.source ?: existing.priceSource,
                     priceUpdated = if (base != null) now else existing.priceUpdated,
                 )
-                dao.update(if (ct != null) merged.withCt(ct.first, ct.second, now) else merged)
+                dao.update(if (lp != null) merged.withLang(lp, now) else merged)
             } else {
                 val row = OwnedCard(
                         cardId = card.id,
@@ -436,7 +419,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         priceUpdated = if (base != null) now else null,
                         addedAt = now,
                     )
-                dao.insert(if (ct != null) row.withCt(ct.first, ct.second, now) else row)
+                dao.insert(if (lp != null) row.withLang(lp, now) else row)
             }
             say("${card.name} aggiunta alla collezione")
         }
@@ -476,12 +459,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     priceUpdated = now,
                 )
             }
-            val ct = detailEstimate(old.cardId, lang, variant)
-            if (ct != null) {
-                updated = updated.withCt(ct.first, ct.second, now)
+            val lp = detailLangPrice(old.cardId, lang)
+            if (lp != null) {
+                updated = updated.withLang(lp, now)
             } else if (lang != old.lang || variant.name != old.variantName) {
-                // I dati CardTrader erano per un'altra lingua o variante: non valgono più.
-                updated = updated.withCt(null, null, now)
+                // I dati per lingua erano per un'altra lingua o variante: non valgono più.
+                updated = updated.withLang(null, now)
             }
             // Se ora coincide con un'altra copia (stessa lingua, condizione e variante) le uniamo.
             val twin = dao.findOther(updated.cardId, lang, condition.name, variant.name, old.id)
@@ -507,18 +490,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Riscarica i prezzi di tutta la collezione: per ogni carta+lingua una richiesta a TCGdex
-     * (Cardmarket) e, se il token c'è, una a CardTrader (offerte in quella lingua).
+     * (Cardmarket) e i prezzi per lingua dai file del job notturno (scaricati una volta).
      */
     fun refreshPrices() {
         if (_refresh.value.running) return
         val groups = owned.value.groupBy { it.cardId to it.lang }
         if (groups.isEmpty()) return
-        val useCt = cardTraderToken.value.isNotBlank()
         _refresh.value = RefreshState(running = true, done = 0, total = groups.size)
         viewModelScope.launch {
             var failed = 0
-            var ctFailed = 0
-            var ctError: String? = null
+            var noLangData = 0
             var done = 0
             for ((key, rows) in groups) {
                 val (cardId, lang) = key
@@ -526,18 +507,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (card == null) {
                     failed++
                 } else {
-                    var ct: Pair<Int?, List<CtOffer>>? = null
-                    if (useCt && ctError == null) {
-                        val res = api { cardTraderOffers(card, lang) }
-                        ct = res.getOrNull()
-                        if (ct == null) {
-                            ctFailed++
-                            // Token sbagliato o limite raggiunto: inutile continuare con CardTrader.
-                            val msg = res.exceptionOrNull()?.message.orEmpty()
-                            if ("Token" in msg || "Troppe" in msg) ctError = msg
-                        }
-                        delay(CT_DELAY_MS) // CardTrader: max ~1 richiesta di offerte al secondo
-                    }
+                    val lp = api { langPrices.forCard(card, lang) }.getOrNull()
+                    if (lp == null && LanguagePrices.fileLang(lang) != null) noLangData++
                     val now = System.currentTimeMillis()
                     for (row in rows) {
                         // Rilegge la riga: l'utente potrebbe averla modificata nel frattempo.
@@ -550,9 +521,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                                 priceUpdated = now,
                             )
                         }
-                        if (ct != null) {
-                            current = current.withCt(ct.first, PriceEngine.estimate(ct.second, current.variant), now)
-                        }
+                        if (lp != null) current = current.withLang(lp, now)
                         dao.update(current)
                     }
                 }
@@ -564,7 +533,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val parts = buildList {
                 add("Prezzi aggiornati")
                 if (failed > 0) add("$failed carte non raggiungibili")
-                if (ctError != null) add("CardTrader: $ctError") else if (ctFailed > 0) add("CardTrader non ha risposto per $ctFailed carte")
+                if (noLangData > 0) add("prezzi per lingua non disponibili per $noLangData carte")
             }
             say(parts.joinToString(" · "))
         }
@@ -576,16 +545,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settings.setFactor(c, value) }
     }
 
-    fun setLanguageFactor(code: String, value: Double) {
-        viewModelScope.launch { settings.setLanguageFactor(code, value) }
-    }
-
     fun resetFactors() {
         viewModelScope.launch { settings.resetFactors() }
     }
 
     companion object {
         private const val PAGE_SIZE = 30
-        private const val CT_DELAY_MS = 1100L
     }
 }

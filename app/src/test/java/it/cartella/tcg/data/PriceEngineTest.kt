@@ -25,7 +25,7 @@ class PriceEngineTest {
         // più economiche: 10, 11, 12, 13, 14 -> mediana 12
         assertEquals(12.0, est.nmAmount, 1e-9)
         assertEquals(7, est.offers)
-        assertEquals(10.0, est.cheapest, 1e-9)
+        assertEquals(10.0, est.cheapest!!, 1e-9)
     }
 
     @Test
@@ -103,16 +103,5 @@ class PriceEngineTest {
         assertEquals(3, learned["it"]!!.samples)
         assertEquals(0.7, learned["it"]!!.ratio, 1e-9) // 0.6, 0.7, 0.8
         assertEquals(1.0, learned["en"]!!.ratio, 1e-9)
-    }
-
-    @Test
-    fun `fattori usano il coefficiente imparato solo con abbastanza carte`() {
-        val f = ValueFactors(
-            language = mapOf("it" to 0.9),
-            learned = mapOf("it" to LearnedCoef(0.6, PriceEngine.MIN_LEARN - 1)),
-        )
-        assertEquals(0.9, f.ofLang("it"), 1e-9)
-        val g = f.copy(learned = mapOf("it" to LearnedCoef(0.6, PriceEngine.MIN_LEARN)))
-        assertEquals(0.6, g.ofLang("it"), 1e-9)
     }
 }
