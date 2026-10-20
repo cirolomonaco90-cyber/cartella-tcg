@@ -30,14 +30,20 @@ class LangData(
 /** Prezzi per lingua di una carta, pronti per il calcolo. */
 data class CardLangPrice(
     val lang: String,
-    /** Stime per variante dalle offerte CardTrader in quella lingua. */
+    /** Stime per variante dalle offerte CardTrader nella lingua della copia. */
     val estimates: Map<Variant, CtEstimate>,
-    /** Coefficiente lingua da applicare a Cardmarket quando le offerte sono poche. */
+    /** Stime per variante delle offerte in inglese (riferimento per il rapporto). */
+    val enEstimates: Map<Variant, CtEstimate>,
+    /** Rapporto medio lingua/inglese del set (o della lingua), calcolato ogni notte. */
     val coef: LearnedCoef?,
-    /** true se il coefficiente è quello del set, false se quello medio della lingua. */
+    /** true se il rapporto medio è quello del set, false se quello della lingua. */
     val coefFromSet: Boolean,
     val updated: String?,
-)
+) {
+    /** Rapporto da applicare a Cardmarket per questa variante. */
+    fun ratio(variant: Variant): RatioInfo =
+        PriceEngine.languageRatio(lang, estimates[variant], enEstimates[variant], coef, coefFromSet)
+}
 
 /**
  * Legge i prezzi per lingua pubblicati ogni notte da GitHub Actions sul branch "prezzi".
@@ -100,10 +106,24 @@ class LanguagePrices(context: Context) {
     /** Prezzi per lingua di una carta (null se i file non sono raggiungibili o la lingua non è coperta). */
     suspend fun forCard(card: CardDetail, lang: String): CardLangPrice? {
         val data = lang(lang) ?: return null
-        val entry = card.cardmarketIds.firstNotNullOfOrNull { data.prices[it] }
-        val estimates = buildMap {
-            entry?.forEach { (v, value) ->
-                val est = CtEstimate(nmAmount = value.first, currency = "EUR", offers = value.second, cheapest = null)
+        val en = if (fileLang(lang) == "en") data else lang("en")
+        val exp = catalog().let { cat -> card.cardmarketIds.firstNotNullOfOrNull { cat[it] } }
+        val setCoef = exp?.let { data.coefByExp[it] }
+        return CardLangPrice(
+            lang = lang,
+            estimates = estimatesFor(data, card),
+            enEstimates = en?.let { estimatesFor(it, card) }.orEmpty(),
+            coef = setCoef ?: data.coefAll,
+            coefFromSet = setCoef != null,
+            updated = data.updated,
+        )
+    }
+
+    private fun estimatesFor(data: LangData, card: CardDetail): Map<Variant, CtEstimate> {
+        val entry = card.cardmarketIds.firstNotNullOfOrNull { data.prices[it] } ?: return emptyMap()
+        return buildMap {
+            entry.forEach { (v, value) ->
+                val est = CtEstimate(nmAmount = value.first, currency = "EUR", offers = value.second)
                 when (v) {
                     'n' -> { put(Variant.NORMAL, est); put(Variant.HOLO, est) }
                     'r' -> put(Variant.REVERSE, est)
@@ -111,15 +131,6 @@ class LanguagePrices(context: Context) {
                 }
             }
         }
-        val exp = catalog().let { cat -> card.cardmarketIds.firstNotNullOfOrNull { cat[it] } }
-        val setCoef = exp?.let { data.coefByExp[it] }
-        return CardLangPrice(
-            lang = lang,
-            estimates = estimates,
-            coef = setCoef ?: data.coefAll,
-            coefFromSet = setCoef != null,
-            updated = data.updated,
-        )
     }
 
     companion object {

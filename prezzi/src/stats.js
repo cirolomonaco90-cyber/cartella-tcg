@@ -49,7 +49,18 @@ export const MIN_OFFERS_FOR_COEF = 3;
 export const MIN_SAMPLES_FOR_COEF = 5;
 
 /**
- * Coefficienti di lingua: mediana di (stima lingua / trend Cardmarket), per espansione e in totale.
+ * Rapporto lingua / inglese di una carta, entrambi su CardTrader (così il sovrapprezzo
+ * del sito si annulla). Solo se entrambe le lingue hanno abbastanza offerte.
+ */
+export function cardRatio(langEntry, enEntry, variant = "n") {
+  const a = langEntry?.[variant];
+  const b = enEntry?.[variant];
+  if (!a || !b || a[1] < MIN_OFFERS_FOR_COEF || b[1] < MIN_OFFERS_FOR_COEF || !(b[0] > 0)) return null;
+  return a[0] / b[0];
+}
+
+/**
+ * Coefficienti di lingua: mediana dei rapporti lingua/inglese, per espansione e in totale.
  * @param samples [{exp, ratio}]
  * @returns {{all?: [number, number], [exp]: [number, number]}}
  */

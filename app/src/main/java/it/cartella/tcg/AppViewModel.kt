@@ -356,16 +356,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return d.langPrice
     }
 
-    /** Copia nella riga i dati per lingua (stima della variante e coefficiente). */
+    /** Copia nella riga i dati per lingua: stima delle offerte e rapporto lingua/inglese finale. */
     private fun OwnedCard.withLang(lp: CardLangPrice?, now: Long): OwnedCard {
         val est = lp?.estimates?.get(variant)
+        val ratio = lp?.ratio(variant)
+        // Senza alcun dato (né sulla carta né medio) non si salva un rapporto: vale 1.
+        val hasRatio = ratio != null && (ratio.cardRatio != null || ratio.coef != null)
         return copy(
             ctAmount = est?.nmAmount,
             ctCurrency = est?.currency,
             ctCount = est?.offers ?: 0,
             ctUpdated = now,
-            langCoef = lp?.coef?.ratio,
-            langCoefSamples = lp?.coef?.samples,
+            langCoef = if (hasRatio) ratio?.ratio else null,
+            langCoefSamples = ratio?.coef?.samples,
         )
     }
 

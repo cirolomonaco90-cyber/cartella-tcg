@@ -30,14 +30,22 @@ Fonti, senza eBay:
 - **Cardmarket**: prezzo affidabile ma uguale per tutte le lingue (listino pubblico, lo stesso usato da TCGdex). L'API di Cardmarket non accetta nuovi sviluppatori.
 - **CardTrader**: API ufficiale, con **offerte filtrate per lingua**. Il job usa un solo token, salvato come secret del repo `CARDTRADER_TOKEN`. Le carte CardTrader sono abbinate a quelle dell'app tramite l'id del prodotto Cardmarket, che entrambi conoscono.
 
+Perché un **rapporto** e non i prezzi CardTrader diretti: Cardmarket è il riferimento più affidabile (prezzi di vendita), ma è uguale per tutte le lingue. Le offerte CardTrader sono separate per lingua, ma sono prezzi richiesti, in genere più alti delle vendite. Confrontando la stessa carta in italiano e in inglese **sullo stesso sito**, il sovrapprezzo si annulla:
+
+`prezzo NM in italiano = Cardmarket × (prezzo italiano / prezzo inglese su CardTrader)`
+
 Il job (`prezzi/src/build.js`, circa un'ora a notte):
-1. Per ogni espansione Pokémon su CardTrader legge le carte e i loro id Cardmarket.
-2. Per ogni lingua scarica le offerte più economiche di tutta l'espansione con una sola richiesta, rispettando il limite di circa 1 richiesta al secondo.
+1. Per ogni espansione Pokémon su CardTrader legge le carte singole (esclusi i prodotti sigillati) e i loro id Cardmarket.
+2. Per ogni lingua, inglese per primo, scarica le offerte più economiche di tutta l'espansione con una richiesta, rispettando il limite di circa 1 richiesta al secondo.
 3. Per ogni carta e variante (normale, reverse, 1ª edizione) calcola la stima Near Mint: esclude graded e lotti, riporta ogni offerta a NM con il coefficiente della condizione, scarta un'eventuale offerta anomala e prende la mediana delle 5 più economiche.
-4. Calcola i **coefficienti di lingua** come mediana di (stima lingua / trend Cardmarket) sulle carte con almeno 3 offerte, per **set** (da 5 carte in su) e per lingua.
+4. Calcola il **rapporto medio lingua/inglese** sulle carte con almeno 3 offerte in entrambe le lingue, per **set** (da 5 carte in su) e per lingua. Il risultato è pubblicato anche in `log.txt` sul branch `prezzi`.
 
 Nell'app (`data/LanguagePrices.kt`, `data/PriceEngine.kt`), per ogni copia:
-`prezzo NM = peso × offerte lingua + (1 − peso) × Cardmarket × coefficiente (del set, altrimenti della lingua)`, con peso = offerte / 6 (al massimo 100%), poi × percentuale della condizione. Nella scheda di ogni carta c'è il dettaglio del calcolo.
+- rapporto della carta = stima lingua / stima inglese, con peso = min(offerte lingua, offerte inglese) / 6, al massimo 100%;
+- rapporto finale = peso × rapporto della carta + (1 − peso) × rapporto medio del set, altrimenti della lingua;
+- prezzo NM = Cardmarket × rapporto finale. Senza Cardmarket si usa la stima delle offerte nella lingua. Poi × percentuale della condizione.
+
+Nella scheda di ogni carta c'è il dettaglio del calcolo.
 
 **Attivazione (una volta, solo lo sviluppatore):** repo GitHub → Settings → Secrets and variables → Actions → New repository secret, nome `CARDTRADER_TOKEN`, valore il token API del proprio account CardTrader. Poi Actions → "Prezzi per lingua" → Run workflow.
 

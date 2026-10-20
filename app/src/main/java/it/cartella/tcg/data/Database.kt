@@ -48,7 +48,8 @@ data class OwnedCard(
     @ColumnInfo(defaultValue = "0") val ctCount: Int = 0,
     val ctBlueprint: Int? = null,
     val ctUpdated: Long? = null,
-    // --- dalla versione 3: coefficiente di lingua (del set o della lingua) calcolato dal job notturno
+    // --- dalla versione 3: rapporto di lingua (prezzo lingua / inglese) usato per questa copia,
+    //     e su quante carte è basato il rapporto medio del set o della lingua
     val langCoef: Double? = null,
     val langCoefSamples: Int? = null,
 )
@@ -68,16 +69,18 @@ data class ValueFactors(
 
 data class RowValue(val unit: Double, val currency: String, val breakdown: PriceBreakdown)
 
-/** Valore di una singola copia: prezzo di riferimento per la sua lingua × condizione. */
+/**
+ * Valore di una singola copia: Cardmarket × rapporto della lingua × condizione.
+ * [langCoef] contiene il rapporto finale (carta + media del set) calcolato all'ultimo aggiornamento.
+ */
 fun OwnedCard.valuation(f: ValueFactors): RowValue? {
     val b = PriceEngine.combine(
         cm = baseAmount,
         cmCurrency = currency,
         ct = ctAmount,
         ctCurrency = ctCurrency,
-        ctOffers = ctCount,
-        langCoef = langCoef ?: 1.0,
-        langCoefLearned = langCoef != null,
+        ratio = if (lang == "en") 1.0 else langCoef ?: 1.0,
+        ratioMeasured = lang == "en" || langCoef != null,
     ) ?: return null
     return RowValue(b.nmAmount * f.of(condition), b.currency, b)
 }

@@ -384,16 +384,17 @@ private fun ValueBox(
 ) {
     val base = Valuation.baseValue(card, variant)
     val est = langPrice?.estimates?.get(variant)
-    val coef = langPrice?.coef
     val langLabel = languageOf(lang).label
+    val isEnglish = lang == "en"
+    val ratio = langPrice?.ratio(variant)
+    val hasRatio = isEnglish || (ratio != null && (ratio.cardRatio != null || ratio.coef != null))
     val breakdown = PriceEngine.combine(
         cm = base?.amount,
         cmCurrency = base?.currency,
         ct = est?.nmAmount,
         ctCurrency = est?.currency,
-        ctOffers = est?.offers ?: 0,
-        langCoef = coef?.ratio ?: 1.0,
-        langCoefLearned = coef != null,
+        ratio = if (isEnglish) 1.0 else if (hasRatio) ratio!!.ratio else 1.0,
+        ratioMeasured = hasRatio,
     )
     val condFactor = factors.of(condition)
     val muted = OnAmber.copy(alpha = 0.85f)
@@ -440,57 +441,65 @@ private fun ValueBox(
                     Spacer(Modifier.height(6.dp))
                     Text("Come è calcolato", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = OnAmber)
 
-                    // Cardmarket corretto per lingua
-                    if (base != null && breakdown.cmAdjusted != null) {
-                        val coefPct = (breakdown.langCoef * 100).roundToInt()
-                        val coefWhy = when {
-                            coef != null && langPrice?.coefFromSet == true ->
-                                "calcolato su ${coef.samples} carte $langLabel di questo set"
-                            coef != null -> "media $langLabel su ${coef.samples} carte"
-                            else -> "nessuna correzione disponibile"
-                        }
+                    // 1) Prezzo Cardmarket
+                    if (base != null) {
                         Text(
-                            "• ${base.source} (tutte le lingue): ${money(base.amount, base.currency)} × $coefPct% " +
-                                "($coefWhy) = ${money(breakdown.cmAdjusted, base.currency)}",
+                            "• ${base.source} (tutte le lingue): ${money(base.amount, base.currency)} Near Mint",
                             style = MaterialTheme.typography.bodySmall,
                             color = muted,
                         )
                     }
 
-                    // Offerte nella lingua
-                    val offersLine = when (langState) {
-                        LangPriceState.LOADING -> "• Offerte in $langLabel: caricamento…"
-                        LangPriceState.UNSUPPORTED ->
+                    // 2) Rapporto lingua / inglese
+                    val pct = { x: Double -> "${(x * 100).roundToInt()}%" }
+                    val ratioLine = when {
+                        isEnglish -> "• Inglese: nessuna correzione"
+                        langState == LangPriceState.LOADING -> "• Rapporto $langLabel/inglese: caricamento…"
+                        langState == LangPriceState.UNSUPPORTED ->
                             "• Prezzi specifici per $langLabel non ancora disponibili (lingue coperte: EN, IT, FR, DE, ES, PT)"
-                        LangPriceState.UNAVAILABLE ->
+                        langState == LangPriceState.UNAVAILABLE ->
                             "• Prezzi per lingua non raggiungibili ora: controlla la connessione"
-                        LangPriceState.OK -> if (est == null) {
-                            "• Nessuna offerta in $langLabel per questa variante su CardTrader"
-                        } else {
-                            val date = shortDate(langPrice?.updated)?.let { " (dati del $it)" }.orEmpty()
-                            "• Offerte in $langLabel su CardTrader: ${est.offers}, stima Near Mint " +
-                                "${money(est.nmAmount, est.currency)}$date"
+                        ratio == null || !hasRatio -> "• Nessun dato per $langLabel: usato il prezzo senza correzione"
+                        else -> buildString {
+                            append("• Rapporto $langLabel/inglese: ${pct(ratio.ratio)}")
+                            val parts = mutableListOf<String>()
+                            ratio.cardRatio?.let {
+                                parts += "questa carta ${pct(it)} su CardTrader (${ratio.langOffers} offerte $langLabel, " +
+                                    "${ratio.enOffers} inglesi), peso ${pct(ratio.cardWeight)}"
+                            }
+                            ratio.coef?.let {
+                                val scope = if (ratio.coefFromSet) "del set" else "della lingua"
+                                parts += "media $scope ${pct(it.ratio)} su ${it.samples} carte"
+                            }
+                            if (parts.isNotEmpty()) append(" (" + parts.joinToString("; ") + ")")
                         }
                     }
-                    Text(offersLine, style = MaterialTheme.typography.bodySmall, color = muted)
-
-                    // Fusione e condizione
-                    val weightPct = (breakdown.ctWeight * 100).roundToInt()
-                    if (weightPct in 1..99) {
+                    Text(ratioLine, style = MaterialTheme.typography.bodySmall, color = muted)
+                    if (breakdown.fromCardmarket && !isEnglish && hasRatio && base != null) {
                         Text(
-                            "• Peso: offerte $weightPct%, Cardmarket ${100 - weightPct}% " +
-                                "(più offerte ci sono, più contano)",
+                            "• ${money(base.amount, base.currency)} × ${pct(breakdown.ratio)} = " +
+                                money(breakdown.nmAmount, breakdown.currency),
                             style = MaterialTheme.typography.bodySmall,
                             color = muted,
                         )
                     }
+                    if (!breakdown.fromCardmarket && est != null) {
+                        val date = shortDate(langPrice?.updated)?.let { " del $it" }.orEmpty()
+                        Text(
+                            "• Cardmarket non ha questa carta: usata la stima delle ${est.offers} offerte " +
+                                "$langLabel su CardTrader$date",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = muted,
+                        )
+                    }
+
                     Text(
                         "• Near Mint ${money(breakdown.nmAmount, breakdown.currency)} × ${(condFactor * 100).roundToInt()}% " +
                             "per ${condition.labelIt}",
                         style = MaterialTheme.typography.bodySmall,
                         color = muted,
                     )
-                    if (base?.approximate == true && breakdown.ctWeight < 1.0) {
+                    if (base?.approximate == true && breakdown.fromCardmarket) {
                         Text(
                             "Attenzione: Cardmarket non ha un prezzo per questa variante, è usato quello della versione base.",
                             style = MaterialTheme.typography.bodySmall,

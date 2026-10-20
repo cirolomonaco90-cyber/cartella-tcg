@@ -25,40 +25,56 @@ data class CtEstimate(
     val cheapest: Double? = null,
 )
 
-/** Coefficiente di lingua imparato dalla collezione: prezzo lingua / prezzo Cardmarket. */
+/** Coefficiente di lingua: rapporto prezzo lingua / prezzo inglese, con il numero di carte usate. */
 data class LearnedCoef(val ratio: Double, val samples: Int)
 
-/** Risultato finale, con tutti i pezzi per spiegare il calcolo all'utente. */
+/** Come si arriva al rapporto di lingua di una carta (per spiegarlo all'utente). */
+data class RatioInfo(
+    /** Rapporto usato: prezzo nella lingua = Cardmarket × ratio. */
+    val ratio: Double,
+    /** Rapporto misurato su questa carta (lingua/inglese su CardTrader), se disponibile. */
+    val cardRatio: Double?,
+    /** Peso del rapporto della carta rispetto a quello medio (0..1). */
+    val cardWeight: Double,
+    val langOffers: Int,
+    val enOffers: Int,
+    /** Rapporto medio del set (o della lingua) usato come base. */
+    val coef: LearnedCoef?,
+    val coefFromSet: Boolean,
+)
+
+/** Risultato finale, con i pezzi per spiegare il calcolo. */
 data class PriceBreakdown(
     /** Prezzo di riferimento Near Mint per quella lingua. */
     val nmAmount: Double,
     val currency: String,
-    /** Quanto pesa CardTrader (0 = solo Cardmarket corretto, 1 = solo CardTrader). */
-    val ctWeight: Double,
-    val cmAdjusted: Double?,
-    val langCoef: Double,
-    val langCoefLearned: Boolean,
+    /** true se basato su Cardmarket × rapporto, false se solo sulle offerte nella lingua. */
+    val fromCardmarket: Boolean,
+    val ratio: Double,
+    val ratioMeasured: Boolean,
 )
 
 /**
  * L'algoritmo dei prezzi per lingua. Funzioni pure, senza Android: testate in PriceEngineTest.
  *
- * 1. Cardmarket (via TCGdex) dà un prezzo affidabile ma uguale per tutte le lingue.
- * 2. CardTrader dà le offerte in vendita filtrate per lingua: ogni offerta viene riportata
- *    a Near Mint dividendo per il coefficiente della sua condizione; si prende la mediana
- *    delle 5 più economiche (le offerte care spesso restano invendute, le più basse
- *    rappresentano il prezzo a cui la carta si vende davvero), scartando un'eventuale
- *    offerta anomala molto più bassa delle altre.
- * 3. I due prezzi si fondono: più offerte ci sono, più conta CardTrader (da 6 offerte in su
- *    conta solo lui). Con poche offerte si usa Cardmarket × coefficiente della lingua.
- * 4. Il coefficiente della lingua lo calcola ogni notte il job su GitHub Actions
- *    (prezzi/src/build.js) su tutte le carte con abbastanza offerte: mediana del rapporto
- *    prezzo lingua / Cardmarket, per set e per lingua. Nessuna configurazione nell'app.
+ * Cardmarket (via TCGdex) dà il prezzo più affidabile, ma uguale per tutte le lingue.
+ * CardTrader dà le offerte separate per lingua, ma i suoi prezzi richiesti sono in genere
+ * più alti delle vendite di Cardmarket. Per questo non si usano i prezzi CardTrader
+ * direttamente: si usa il **rapporto** tra lingua e inglese sullo stesso sito, dove il
+ * sovrapprezzo si annulla.
+ *
+ *   prezzo NM nella lingua = Cardmarket × rapporto
+ *
+ * 1. Stima Near Mint per lingua (job notturno): offerte riportate a NM con il coefficiente
+ *    della condizione, mediana delle 5 più economiche, esclusa un'offerta anomala.
+ * 2. Rapporto della carta = stima lingua / stima inglese, se entrambe hanno offerte.
+ * 3. Rapporto medio del set (o della lingua), calcolato ogni notte su tutte le carte.
+ * 4. Fusione: peso della carta = min(offerte lingua, offerte inglese) / 6, al massimo 100%.
+ * 5. Senza prezzo Cardmarket si usa direttamente la stima CardTrader nella lingua.
+ * Infine l'app applica la percentuale della condizione.
  */
 object PriceEngine {
     const val FULL_WEIGHT_OFFERS = 6
-    const val MIN_OFFERS_FOR_LEARNING = 3
-    const val MIN_LEARN = 5
     private const val CHEAPEST_K = 5
 
     /** Condizioni di CardTrader -> le nostre. */
@@ -79,6 +95,7 @@ object PriceEngine {
         Variant.NORMAL, Variant.HOLO -> o.reverse != true && o.firstEdition != true
     }
 
+    /** Stessa stima del job notturno (prezzi/src/stats.js), usata nei test. */
     fun estimate(offers: List<CtOffer>, variant: Variant): CtEstimate? {
         val usable = offers.filter {
             !it.graded && it.bundle <= 1 && it.quantity > 0 && it.price > 0 && matchesVariant(it, variant)
@@ -87,58 +104,55 @@ object PriceEngine {
         val currency = usable.groupingBy { it.currency }.eachCount().maxByOrNull { it.value }!!.key
         val same = usable.filter { it.currency == currency }
         val nm = same.map { it.price / ctCondition(it.condition).defaultFactor }.sorted().toMutableList()
-        // Un'offerta isolata a meno della metà della successiva è probabilmente un errore o un'esca.
         if (nm.size >= 4 && nm[0] < 0.5 * nm[1]) nm.removeAt(0)
-        val cheapest = nm.take(CHEAPEST_K)
         return CtEstimate(
-            nmAmount = median(cheapest),
+            nmAmount = median(nm.take(CHEAPEST_K)),
             currency = currency,
             offers = same.size,
             cheapest = same.minOf { it.price },
         )
     }
 
-    fun ctWeight(offers: Int): Double = (offers.toDouble() / FULL_WEIGHT_OFFERS).coerceIn(0.0, 1.0)
+    fun weight(offers: Int): Double = (offers.toDouble() / FULL_WEIGHT_OFFERS).coerceIn(0.0, 1.0)
+
+    /** Rapporto prezzo lingua / Cardmarket per una carta. L'inglese vale sempre 1. */
+    fun languageRatio(
+        lang: String,
+        langEst: CtEstimate?,
+        enEst: CtEstimate?,
+        coef: LearnedCoef?,
+        coefFromSet: Boolean,
+    ): RatioInfo {
+        if (lang == "en") return RatioInfo(1.0, null, 0.0, enEst?.offers ?: 0, enEst?.offers ?: 0, null, false)
+        val base = coef?.ratio ?: 1.0
+        val card = if (langEst != null && enEst != null && enEst.nmAmount > 0 && langEst.currency == enEst.currency) {
+            (langEst.nmAmount / enEst.nmAmount).coerceIn(0.1, 5.0)
+        } else {
+            null
+        }
+        val w = if (card != null) weight(minOf(langEst!!.offers, enEst!!.offers)) else 0.0
+        val ratio = if (card != null) w * card + (1 - w) * base else base
+        return RatioInfo(ratio, card, w, langEst?.offers ?: 0, enEst?.offers ?: 0, coef, coefFromSet)
+    }
 
     /**
-     * Prezzo Near Mint per una lingua.
-     * [cm] = prezzo Cardmarket (tutte le lingue), [ct] = stima CardTrader per la lingua.
+     * Prezzo Near Mint nella lingua: Cardmarket × rapporto; senza Cardmarket, la stima
+     * delle offerte nella lingua.
      */
     fun combine(
         cm: Double?,
         cmCurrency: String?,
         ct: Double?,
         ctCurrency: String?,
-        ctOffers: Int,
-        langCoef: Double,
-        langCoefLearned: Boolean,
-    ): PriceBreakdown? {
-        val cmAdj = cm?.let { it * langCoef }
-        val hasCt = ct != null && ct > 0 && ctCurrency != null && ctOffers > 0
-        return when {
-            hasCt && cmAdj != null && cmCurrency == ctCurrency -> {
-                val w = ctWeight(ctOffers)
-                PriceBreakdown(w * ct!! + (1 - w) * cmAdj, ctCurrency!!, w, cmAdj, langCoef, langCoefLearned)
-            }
-            // Valute diverse: non si mescolano. CardTrader vince se ha abbastanza offerte.
-            hasCt && (cmAdj == null || ctOffers >= MIN_OFFERS_FOR_LEARNING) ->
-                PriceBreakdown(ct!!, ctCurrency!!, 1.0, cmAdj, langCoef, langCoefLearned)
-            cmAdj != null && cmCurrency != null ->
-                PriceBreakdown(cmAdj, cmCurrency, 0.0, cmAdj, langCoef, langCoefLearned)
-            else -> null
-        }
+        ratio: Double,
+        ratioMeasured: Boolean,
+    ): PriceBreakdown? = when {
+        cm != null && cm > 0 && cmCurrency != null ->
+            PriceBreakdown(cm * ratio, cmCurrency, true, ratio, ratioMeasured)
+        ct != null && ct > 0 && ctCurrency != null ->
+            PriceBreakdown(ct, ctCurrency, false, ratio, ratioMeasured)
+        else -> null
     }
-
-    data class LearningSample(val lang: String, val key: String, val cm: Double, val ct: Double)
-
-    /** Mediana dei rapporti CardTrader/Cardmarket per lingua (una carta conta una volta). */
-    fun learn(samples: List<LearningSample>): Map<String, LearnedCoef> =
-        samples.distinctBy { it.lang to it.key }
-            .filter { it.cm > 0 && it.ct > 0 }
-            .groupBy { it.lang }
-            .mapValues { (_, list) ->
-                LearnedCoef(median(list.map { (it.ct / it.cm).coerceIn(0.1, 5.0) }), list.size)
-            }
 
     fun median(values: List<Double>): Double {
         require(values.isNotEmpty())

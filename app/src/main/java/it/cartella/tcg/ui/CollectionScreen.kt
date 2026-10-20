@@ -53,6 +53,7 @@ import it.cartella.tcg.data.languageOf
 import it.cartella.tcg.data.unitValue
 import it.cartella.tcg.data.valuation
 import it.cartella.tcg.data.variant
+import kotlin.math.roundToInt
 
 private val SORT_LABELS = listOf("Recenti", "Valore", "Nome")
 
@@ -282,7 +283,12 @@ private fun OwnedRow(
                 // Da dove viene il prezzo: offerte reali nella lingua o stima corretta.
                 if (v != null) {
                     Text(
-                        if (v.breakdown.ctWeight > 0) "${card.ctCount} offerte ${card.lang.uppercase()}" else "stima",
+                        when {
+                            card.lang == "en" -> "Cardmarket"
+                            !v.breakdown.fromCardmarket -> "${card.ctCount} offerte ${card.lang.uppercase()}"
+                            v.breakdown.ratioMeasured -> "${(v.breakdown.ratio * 100).roundToInt()}% dell'inglese"
+                            else -> "senza correzione lingua"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

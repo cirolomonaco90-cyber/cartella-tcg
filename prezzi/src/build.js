@@ -6,56 +6,61 @@
 //   catalog.json  { v, updated, exp: {expId: nome}, cm: {idProdottoCardmarket: expId} }
 //   <lingua>.json { v, lang, updated, coef: {all: [r, n], expId: [r, n]},
 //                   p: {idProdottoCardmarket: {n: [prezzoNM, offerte], r: [...], f: [...]}} }
-//     n = normale/holo, r = reverse, f = 1ª edizione; prezzi NM in euro.
-//     coef = mediana di (prezzo lingua / trend Cardmarket), per espansione e in totale.
+//     n = normale/holo, r = reverse, f = 1ª edizione; prezzi NM in euro (offerte CardTrader).
+//     coef = mediana del rapporto prezzo lingua / prezzo inglese, entrambi su CardTrader
+//            (così il sovrapprezzo del sito si annulla), per espansione e in totale.
+//            L'app moltiplica il prezzo Cardmarket per questo rapporto.
 //
-// Variabili opzionali: LANGS (default en,it,fr,de,es,pt), MAX_EXPANSIONS (per prove).
+// Variabili opzionali: LANGS (default en,it,fr,de,es,pt; l'inglese serve sempre come riferimento),
+// MAX_EXPANSIONS (per prove).
 import fs from "node:fs/promises";
 import path from "node:path";
 import { CardTrader } from "./cardtrader.js";
-import { estimate, coefficients, MIN_OFFERS_FOR_COEF } from "./stats.js";
+import { estimate, coefficients, cardRatio } from "./stats.js";
 
 export const DEFAULT_LANGS = ["en", "it", "fr", "de", "es", "pt"];
-const CARDMARKET_GUIDE = "https://downloads.s3.cardmarket.com/productCatalog/priceGuide/price_guide_6.json";
-
-/** Trend Cardmarket per idProduct (stessa fonte pubblica usata da TCGdex). */
-export async function loadCardmarketTrends(fetchFn = fetch) {
-  const res = await fetchFn(CARDMARKET_GUIDE);
-  if (!res.ok) throw new Error(`Cardmarket price guide: HTTP ${res.status}`);
-  const data = await res.json();
-  const map = new Map();
-  for (const g of data.priceGuides || []) {
-    const t = g.trend ?? g.avg30 ?? g.avg;
-    if (typeof g.idProduct === "number" && t > 0) map.set(g.idProduct, t);
-  }
-  return map;
-}
 
 /**
  * Costruisce catalogo e file per lingua.
  * @returns {{catalog: object, perLang: Record<string, object>, log: string[]}}
  */
-export async function build({ ct, cmTrends = new Map(), langs = DEFAULT_LANGS, maxExpansions = Infinity, now = new Date() }) {
+export async function build({ ct, langs = DEFAULT_LANGS, maxExpansions = Infinity, now = new Date() }) {
   const log = [];
   const updated = now.toISOString();
+  // L'inglese è il riferimento per i rapporti: va sempre calcolato, e per primo.
+  const order = ["en", ...langs.filter((l) => l !== "en")];
   const gameId = await ct.pokemonGameId();
   const expansions = (await ct.expansions(gameId)).slice(0, maxExpansions);
   log.push(`Espansioni Pokémon su CardTrader: ${expansions.length}`);
 
   // 1) Catalogo: quali prodotti Cardmarket corrispondono a quali blueprint ed espansioni.
+  const all = []; // [{exp, bps}]
+  for (const e of expansions) {
+    try {
+      all.push({ exp: e, bps: await ct.blueprints(e.id) });
+    } catch (err) {
+      log.push(`! blueprint ${e.name}: ${err.message}`);
+    }
+  }
+  // Solo carte singole: la categoria più frequente tra i blueprint collegati a Cardmarket.
+  // Le altre (box, buste, accessori) falserebbero prezzi e coefficienti.
+  const categoryCount = new Map();
+  for (const { bps } of all) {
+    for (const bp of bps) {
+      if ((bp.card_market_ids || []).length === 0) continue;
+      categoryCount.set(bp.category_id, (categoryCount.get(bp.category_id) || 0) + 1);
+    }
+  }
+  const singlesCategory = [...categoryCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  log.push(`Categorie dei blueprint (id: quantità): ${[...categoryCount.entries()].map(([k, v]) => `${k}: ${v}`).join(", ")}; carte singole = ${singlesCategory}`);
+
   const catalog = { v: 1, updated, exp: {}, cm: {} };
   const bpToCm = new Map(); // blueprintId -> [idProduct]
   const useful = [];
-  for (const e of expansions) {
-    let bps;
-    try {
-      bps = await ct.blueprints(e.id);
-    } catch (err) {
-      log.push(`! blueprint ${e.name}: ${err.message}`);
-      continue;
-    }
+  for (const { exp: e, bps } of all) {
     let any = false;
     for (const bp of bps) {
+      if (singlesCategory !== undefined && bp.category_id !== singlesCategory) continue;
       const ids = (bp.card_market_ids || []).map(Number).filter(Number.isFinite);
       if (ids.length === 0) continue;
       bpToCm.set(bp.id, ids);
@@ -71,7 +76,8 @@ export async function build({ ct, cmTrends = new Map(), langs = DEFAULT_LANGS, m
 
   // 2) Offerte per lingua, un'espansione alla volta.
   const perLang = {};
-  for (const lang of langs) {
+  const enByBp = new Map(); // blueprintId -> voce inglese (riferimento)
+  for (const lang of order) {
     const p = {};
     const samples = [];
     let failures = 0;
@@ -94,21 +100,26 @@ export async function build({ ct, cmTrends = new Map(), langs = DEFAULT_LANGS, m
         }
         if (Object.keys(entry).length === 0) continue;
         for (const id of ids) p[id] = entry;
-        // Campione per il coefficiente: versione normale con abbastanza offerte.
-        const trend = cmTrends.get(ids[0]);
-        if (entry.n && entry.n[1] >= MIN_OFFERS_FOR_COEF && trend > 0) {
-          samples.push({ exp: e.id, ratio: entry.n[0] / trend });
+        if (lang === "en") {
+          enByBp.set(bpId, entry);
+        } else {
+          const r = cardRatio(entry, enByBp.get(bpId), "n");
+          if (r !== null) samples.push({ exp: e.id, ratio: r });
         }
       }
     }
-    const coef = coefficients(samples);
+    const coef = lang === "en" ? {} : coefficients(samples);
     perLang[lang] = { v: 1, lang, updated, coef, p };
     log.push(
-      `${lang}: ${Object.keys(p).length} prodotti con offerte, coefficiente totale ` +
-        `${coef.all ? `${Math.round(coef.all[0] * 100)}% su ${coef.all[1]} carte` : "n/d"}` +
+      `${lang}: ${Object.keys(p).length} prodotti con offerte` +
+        (lang === "en"
+          ? " (riferimento)"
+          : `, rapporto con l'inglese ${coef.all ? `${Math.round(coef.all[0] * 100)}% su ${coef.all[1]} carte` : "n/d"}`) +
         (failures ? `, ${failures} espansioni non lette` : ""),
     );
   }
+  // Solo le lingue richieste finiscono nei file.
+  for (const l of Object.keys(perLang)) if (!langs.includes(l)) delete perLang[l];
   return { catalog, perLang, log };
 }
 
@@ -122,17 +133,9 @@ async function main() {
   const langs = (process.env.LANGS || DEFAULT_LANGS.join(",")).split(",").map((s) => s.trim()).filter(Boolean);
   const maxExpansions = Number(process.env.MAX_EXPANSIONS || Infinity);
 
-  let cmTrends = new Map();
-  try {
-    cmTrends = await loadCardmarketTrends();
-    console.log(`Trend Cardmarket caricati: ${cmTrends.size}`);
-  } catch (e) {
-    console.log(`Attenzione, coefficienti non calcolabili: ${e.message}`);
-  }
-
   const ct = new CardTrader({ token });
   const started = Date.now();
-  const { catalog, perLang, log } = await build({ ct, cmTrends, langs, maxExpansions });
+  const { catalog, perLang, log } = await build({ ct, langs, maxExpansions });
   log.forEach((l) => console.log(l));
 
   const dir = path.join(out, "v1");
@@ -141,7 +144,10 @@ async function main() {
   for (const [lang, data] of Object.entries(perLang)) {
     await fs.writeFile(path.join(dir, `${lang}.json`), JSON.stringify(data));
   }
-  console.log(`Fatto in ${Math.round((Date.now() - started) / 60000)} minuti, ${ct.calls} chiamate a CardTrader.`);
+  const done = `Fatto in ${Math.round((Date.now() - started) / 60000)} minuti, ${ct.calls} chiamate a CardTrader.`;
+  console.log(done);
+  // Registro leggibile pubblicato con i dati (i log di Actions non sempre sono consultabili).
+  await fs.writeFile(path.join(out, "log.txt"), [...log, done].join("\n") + "\n");
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

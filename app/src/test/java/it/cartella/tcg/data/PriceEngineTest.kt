@@ -56,52 +56,43 @@ class PriceEngineTest {
         assertNull(PriceEngine.estimate(listOf(offer(5.0)), Variant.REVERSE))
     }
 
+    private fun est(p: Double, n: Int) = CtEstimate(p, "EUR", n)
+
     @Test
-    fun `fusione pesata per numero di offerte`() {
-        // 3 offerte -> peso CardTrader 50%
-        val b = PriceEngine.combine(10.0, "EUR", 6.0, "EUR", 3, langCoef = 1.0, langCoefLearned = false)!!
-        assertEquals(0.5, b.ctWeight, 1e-9)
-        assertEquals(8.0, b.nmAmount, 1e-9)
-        // 6+ offerte -> solo CardTrader
-        val full = PriceEngine.combine(10.0, "EUR", 6.0, "EUR", 9, 1.0, false)!!
-        assertEquals(6.0, full.nmAmount, 1e-9)
+    fun `rapporto della carta pesato con quello del set`() {
+        // italiano 60, inglese 100 sulla stessa carta -> 60%; 3 offerte (minimo delle due) -> peso 50%
+        val r = PriceEngine.languageRatio("it", est(60.0, 3), est(100.0, 8), LearnedCoef(0.8, 40), coefFromSet = true)
+        assertEquals(0.6, r.cardRatio!!, 1e-9)
+        assertEquals(0.5, r.cardWeight, 1e-9)
+        assertEquals(0.7, r.ratio, 1e-9) // 0.5*0.6 + 0.5*0.8
+        // con 6+ offerte in entrambe conta solo la carta
+        val full = PriceEngine.languageRatio("it", est(60.0, 9), est(100.0, 7), LearnedCoef(0.8, 40), true)
+        assertEquals(0.6, full.ratio, 1e-9)
     }
 
     @Test
-    fun `senza cardtrader usa cardmarket per il coefficiente lingua`() {
-        val b = PriceEngine.combine(10.0, "EUR", null, null, 0, langCoef = 0.7, langCoefLearned = true)!!
+    fun `senza offerte sulla carta vale il rapporto medio`() {
+        val r = PriceEngine.languageRatio("it", null, est(100.0, 8), LearnedCoef(0.72, 3400), coefFromSet = false)
+        assertNull(r.cardRatio)
+        assertEquals(0.72, r.ratio, 1e-9)
+        // nessun dato: nessuna correzione
+        assertEquals(1.0, PriceEngine.languageRatio("it", null, null, null, false).ratio, 1e-9)
+    }
+
+    @Test
+    fun `l inglese ha sempre rapporto 1`() {
+        assertEquals(1.0, PriceEngine.languageRatio("en", est(50.0, 9), est(50.0, 9), LearnedCoef(2.0, 9), true).ratio, 1e-9)
+    }
+
+    @Test
+    fun `prezzo finale cardmarket per rapporto`() {
+        val b = PriceEngine.combine(10.0, "EUR", 25.0, "EUR", ratio = 0.7, ratioMeasured = true)!!
         assertEquals(7.0, b.nmAmount, 1e-9)
-        assertEquals(0.0, b.ctWeight, 1e-9)
-        assertTrue(b.langCoefLearned)
-    }
-
-    @Test
-    fun `valute diverse non si mescolano`() {
-        val few = PriceEngine.combine(10.0, "USD", 6.0, "EUR", 1, 1.0, false)!!
-        assertEquals("USD", few.currency) // poche offerte: resta Cardmarket/TCGplayer
-        val many = PriceEngine.combine(10.0, "USD", 6.0, "EUR", 4, 1.0, false)!!
-        assertEquals("EUR", many.currency)
-        assertEquals(6.0, many.nmAmount, 1e-9)
-    }
-
-    @Test
-    fun `nessun dato restituisce null`() {
-        assertNull(PriceEngine.combine(null, null, null, null, 0, 1.0, false))
-    }
-
-    @Test
-    fun `coefficiente imparato e la mediana dei rapporti`() {
-        val samples = listOf(
-            PriceEngine.LearningSample("it", "a", 10.0, 7.0),
-            PriceEngine.LearningSample("it", "b", 20.0, 12.0),
-            PriceEngine.LearningSample("it", "c", 5.0, 4.0),
-            PriceEngine.LearningSample("it", "c", 5.0, 4.0), // duplicato: conta una volta
-            PriceEngine.LearningSample("en", "a", 10.0, 10.0),
-        )
-        val learned = PriceEngine.learn(samples)
-        assertNotNull(learned["it"])
-        assertEquals(3, learned["it"]!!.samples)
-        assertEquals(0.7, learned["it"]!!.ratio, 1e-9) // 0.6, 0.7, 0.8
-        assertEquals(1.0, learned["en"]!!.ratio, 1e-9)
+        assertTrue(b.fromCardmarket)
+        // senza Cardmarket: la stima delle offerte nella lingua
+        val ct = PriceEngine.combine(null, null, 25.0, "EUR", 0.7, true)!!
+        assertEquals(25.0, ct.nmAmount, 1e-9)
+        assertEquals(false, ct.fromCardmarket)
+        assertNull(PriceEngine.combine(null, null, null, null, 1.0, false))
     }
 }
