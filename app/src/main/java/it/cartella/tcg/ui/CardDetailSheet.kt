@@ -459,6 +459,9 @@ private fun ValueBox(
                             "• Prezzi specifici per $langLabel non ancora disponibili (lingue coperte: EN, IT, FR, DE, ES, PT)"
                         langState == LangPriceState.UNAVAILABLE ->
                             "• Prezzi per lingua non raggiungibili ora: controlla la connessione"
+                        langPrice?.reliable == false ->
+                            "• CardTrader non ha ancora abbastanza offerte in $langLabel per stimare la differenza " +
+                                "con l'inglese: prezzo Cardmarket senza correzione"
                         ratio == null || !hasRatio -> "• Nessun dato per $langLabel: usato il prezzo senza correzione"
                         else -> buildString {
                             append("• Rapporto $langLabel/inglese: ${pct(ratio.ratio)}")

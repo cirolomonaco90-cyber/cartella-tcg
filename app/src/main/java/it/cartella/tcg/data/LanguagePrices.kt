@@ -39,10 +39,19 @@ data class CardLangPrice(
     /** true se il rapporto medio è quello del set, false se quello della lingua. */
     val coefFromSet: Boolean,
     val updated: String?,
+    /**
+     * false se il job non ha pubblicato un rapporto per la lingua (troppe poche offerte
+     * su CardTrader per un confronto affidabile con l'inglese): niente correzione.
+     */
+    val reliable: Boolean = true,
 ) {
     /** Rapporto da applicare a Cardmarket per questa variante. */
     fun ratio(variant: Variant): RatioInfo =
-        PriceEngine.languageRatio(lang, estimates[variant], enEstimates[variant], coef, coefFromSet)
+        if (reliable) {
+            PriceEngine.languageRatio(lang, estimates[variant], enEstimates[variant], coef, coefFromSet)
+        } else {
+            PriceEngine.languageRatio(lang, null, null, null, false)
+        }
 }
 
 /**
@@ -116,6 +125,7 @@ class LanguagePrices(context: Context) {
             coef = setCoef ?: data.coefAll,
             coefFromSet = setCoef != null,
             updated = data.updated,
+            reliable = fileLang(lang) == "en" || data.coefAll != null,
         )
     }
 

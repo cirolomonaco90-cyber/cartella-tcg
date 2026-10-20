@@ -45,8 +45,14 @@ export function estimate(offers, variant, currency = "EUR") {
   return [round2(median(nm.slice(0, 5))), usable.length];
 }
 
-export const MIN_OFFERS_FOR_COEF = 3;
-export const MIN_SAMPLES_FOR_COEF = 5;
+// Soglie verificate sui dati reali (ottobre 2026): con poche offerte la mediana delle più
+// economiche è sistematicamente più alta, quindi il rapporto con l'inglese (che ha molte
+// offerte) risulta gonfiato. Per l'italiano il rapporto è stabile a ogni soglia; per
+// tedesco/francese/spagnolo cala al crescere delle offerte. Usiamo solo carte ben coperte
+// in entrambe le lingue, e pubblichiamo un rapporto di lingua solo se ne abbiamo abbastanza.
+export const MIN_OFFERS_FOR_COEF = 15;
+export const MIN_SAMPLES_FOR_COEF = 5; // per set
+export const MIN_SAMPLES_FOR_LANG = 200; // per l'intera lingua: sotto, la lingua non è affidabile
 
 /**
  * Rapporto lingua / inglese di una carta, entrambi su CardTrader (così il sovrapprezzo
@@ -74,11 +80,13 @@ export function coefficients(samples) {
     byExp.get(s.exp).push(r);
   }
   const all = [];
+  for (const list of byExp.values()) all.push(...list);
+  // Lingua non affidabile: nessun rapporto, l'app userà Cardmarket senza correzione.
+  if (all.length < MIN_SAMPLES_FOR_LANG) return out;
+  out.all = [round3(median(all)), all.length];
   for (const [exp, list] of byExp) {
-    all.push(...list);
     if (list.length >= MIN_SAMPLES_FOR_COEF) out[exp] = [round3(median(list)), list.length];
   }
-  if (all.length >= MIN_SAMPLES_FOR_COEF) out.all = [round3(median(all)), all.length];
   return out;
 }
 

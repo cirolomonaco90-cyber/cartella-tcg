@@ -39,4 +39,22 @@ class LanguagePricesTest {
         assertEquals("pt", LanguagePrices.fileLang("pt-br"))
         assertNull(LanguagePrices.fileLang("ja"))
     }
+
+    @Test
+    fun `lingua non affidabile non applica correzioni`() {
+        val est = CtEstimate(150.0, "EUR", 4)
+        val en = CtEstimate(100.0, "EUR", 25)
+        val lp = CardLangPrice(
+            lang = "de",
+            estimates = mapOf(Variant.NORMAL to est),
+            enEstimates = mapOf(Variant.NORMAL to en),
+            coef = null,
+            coefFromSet = false,
+            updated = null,
+            reliable = false,
+        )
+        val r = lp.ratio(Variant.NORMAL)
+        assertEquals(1.0, r.ratio, 1e-9)
+        assertNull(r.cardRatio)
+    }
 }

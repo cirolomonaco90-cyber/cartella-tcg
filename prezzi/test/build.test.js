@@ -22,19 +22,22 @@ test("stima: mediana delle 5 più economiche riportate a NM", () => {
 });
 
 test("rapporto lingua/inglese sulla stessa carta", () => {
-  assert.equal(cardRatio({ n: [72, 3] }, { n: [102, 4] }), 72 / 102);
-  assert.equal(cardRatio({ n: [72, 2] }, { n: [102, 4] }), null); // troppe poche offerte
-  assert.equal(cardRatio({ n: [72, 3] }, undefined), null);
-  assert.equal(cardRatio({ r: [10, 5] }, { r: [20, 5] }, "r"), 0.5);
+  assert.equal(cardRatio({ n: [72, 15] }, { n: [102, 20] }), 72 / 102);
+  assert.equal(cardRatio({ n: [72, 14] }, { n: [102, 20] }), null); // troppe poche offerte
+  assert.equal(cardRatio({ n: [72, 15] }, undefined), null);
+  assert.equal(cardRatio({ r: [10, 15] }, { r: [20, 15] }, "r"), 0.5);
 });
 
-test("coefficienti per espansione e totale", () => {
-  const s = [0.6, 0.7, 0.8, 0.7, 0.9].map((ratio) => ({ exp: 1, ratio }));
-  s.push({ exp: 2, ratio: 1.2 });
+test("coefficienti: lingua affidabile solo con abbastanza carte", () => {
+  // 210 carte: 200 nel set 1 (rapporto 0.7) e 10 nel set 2 (1.2)
+  const s = Array.from({ length: 200 }, () => ({ exp: 1, ratio: 0.7 }));
+  for (let i = 0; i < 10; i++) s.push({ exp: 2, ratio: 1.2 });
   const c = coefficients(s);
-  assert.deepEqual(c[1], [0.7, 5]);
-  assert.equal(c[2], undefined); // troppo pochi campioni
-  assert.deepEqual(c.all, [0.75, 6]);
+  assert.deepEqual(c.all, [0.7, 210]);
+  assert.deepEqual(c[1], [0.7, 200]);
+  assert.deepEqual(c[2], [1.2, 10]);
+  // poche carte: niente rapporto, nemmeno per set
+  assert.deepEqual(coefficients(s.slice(0, 150)), {});
 });
 
 /** Finto CardTrader con due espansioni e prezzi diversi per lingua. */

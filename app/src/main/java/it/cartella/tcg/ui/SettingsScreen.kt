@@ -149,9 +149,10 @@ fun SettingsScreen(vm: AppViewModel) {
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        "Calcolati ogni notte, in automatico, dalle offerte CardTrader di tutte le carte in ogni " +
-                            "lingua, confrontate con Cardmarket. Il coefficiente indica quanto vale in media una " +
-                            "carta in quella lingua rispetto al prezzo Cardmarket; per ogni set ce n'è uno specifico.",
+                        "Calcolati ogni notte, in automatico: per ogni carta si confrontano le offerte CardTrader " +
+                            "nella lingua con quelle in inglese, e il rapporto si applica al prezzo Cardmarket. " +
+                            "Per ogni set c'è un rapporto medio specifico. Una lingua viene corretta solo se " +
+                            "CardTrader ha abbastanza offerte per un confronto affidabile.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -162,7 +163,14 @@ fun SettingsScreen(vm: AppViewModel) {
                             !summary.containsKey(code) -> "caricamento…"
                             data == null -> "dati non disponibili"
                             else -> buildString {
-                                append(data.coefAll?.let { "coefficiente medio ${(it.ratio * 100).roundToInt()}%" } ?: "coefficiente n/d")
+                                append(
+                                    when {
+                                        code == "en" -> "riferimento"
+                                        data.coefAll != null ->
+                                            "${(data.coefAll.ratio * 100).roundToInt()}% dell'inglese (su ${data.coefAll.samples} carte)"
+                                        else -> "poche offerte: nessuna correzione"
+                                    },
+                                )
                                 append(" · ${data.prices.size} carte con offerte")
                                 data.updated?.take(10)?.split("-")?.takeIf { it.size == 3 }?.let {
                                     append(" · aggiornati il ${it[2]}/${it[1]}")
