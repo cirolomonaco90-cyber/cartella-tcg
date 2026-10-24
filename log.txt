@@ -1,0 +1,10 @@
+Espansioni Pokémon su CardTrader: 859
+Categorie dei blueprint (id: quantità): 69: 435, 59: 379, 60: 683, 68: 278, 61: 614, 62: 404, 63: 220, 64: 152, 65: 150, 86: 72, 66: 375, 118: 233, 78: 338, 190: 152, 73: 63177, 67: 326, 74: 51, 136: 12, 318: 1; carte singole = 73
+Espansioni con carte collegate a Cardmarket: 761, prodotti: 63209
+en: 25312 prodotti con offerte (riferimento)
+it: 22435 prodotti con offerte, rapporto con l'inglese 72% su 13861 carte
+fr: 8725 prodotti con offerte, rapporto con l'inglese n/d
+de: 14775 prodotti con offerte, rapporto con l'inglese n/d
+es: 12005 prodotti con offerte, rapporto con l'inglese n/d
+pt: 1070 prodotti con offerte, rapporto con l'inglese n/d
+Fatto in 137 minuti, 5427 chiamate a CardTrader.
